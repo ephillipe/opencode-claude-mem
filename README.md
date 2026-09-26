@@ -240,6 +240,24 @@ bun run typecheck
 modules are plain data and `fetch`, which is what keeps a future V1 shim to a single file.
 A test enforces this.
 
+### Releasing
+
+`scripts/publish.sh` runs the preflight that catches the two failure modes which otherwise
+only show up as a rejected upload: being logged in as the wrong npm account (the `@ephillipe`
+scope is owned by the account of that name), and re-publishing a version the registry
+already has, which it refuses and which cannot be undone.
+
+```sh
+./scripts/publish.sh --dry-run   # every check, uploads nothing
+npm login                        # interactive; this script never logs in
+./scripts/publish.sh
+```
+
+`prepublishOnly` runs the typecheck and the test suite, so a red tree cannot ship.
+`scripts/verify-tarball.sh` is deliberately not wired into it: it resolves dependencies over
+the network, and a publish step that fails on the network fails for the wrong reason. Run it
+on its own, or as part of `publish.sh`.
+
 ## License
 
 MIT
