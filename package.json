@@ -1,0 +1,35 @@
+{
+  "name": "@ephillipe/opencode-claude-mem",
+  "version": "0.1.0",
+  "description": "OpenCode V2 plugin for claude-mem persistent memory: turn capture, once-per-session context injection, and recall search",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["opencode", "opencode-plugin", "claude-mem", "memory"],
+  "dependencies": {
+    "@opencode/plugin": "^2.0.16"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/ephillipe/opencode-claude-mem#readme",
+  "bugs": {
+    "url": "https://github.com/ephillipe/opencode-claude-mem/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ephillipe/opencode-claude-mem.git"
+  }
+}
