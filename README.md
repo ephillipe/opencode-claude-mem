@@ -258,6 +258,22 @@ npm login                        # interactive; this script never logs in
 the network, and a publish step that fails on the network fails for the wrong reason. Run it
 on its own, or as part of `publish.sh`.
 
+### Releasing after the first version
+
+The first release needs a token and has to be done from a machine. After that,
+`.github/workflows/publish.yml` publishes on a `v*` tag with **no npm token at all** — npm
+exchanges a short-lived OIDC token, so there is no long-lived credential to store or rotate,
+and npm attaches a provenance attestation automatically.
+
+It needs a trusted publisher configured once on npmjs.com, under the package's
+**Settings → Trusted Publisher**: organization `ephillipe`, repository `opencode-claude-mem`,
+workflow `publish.yml`. npm does not validate that configuration when you save it, so a typo
+there surfaces only as `ENEEDAUTH` at publish time.
+
+It cannot bootstrap the first release: npm only offers Trusted Publisher settings on a package
+that already exists. So `v0.1.0` goes out through `scripts/publish.sh`, and every version after
+it is a tag push.
+
 ## License
 
 MIT

@@ -57,6 +57,12 @@ die() {
 step() { echo; echo "== $*"; }
 
 # ---------------------------------------------------------------- 1. auth ---
+#
+# This gate is for the local, token-based path only. Under npm trusted
+# publishing the OIDC token is exchanged during `npm publish` itself and does
+# not appear in `npm whoami`, so a CI publish would be rejected here. That is
+# why CI has its own workflow, .github/workflows/publish.yml, and does not call
+# this script.
 
 step "Checking authentication"
 WHOAMI="$(npm whoami 2>/dev/null || true)"

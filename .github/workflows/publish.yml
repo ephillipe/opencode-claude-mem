@@ -1,0 +1,81 @@
+name: Publish
+
+# Tokenless publishing via npm trusted publishing (OIDC). There is deliberately
+# no NPM_TOKEN secret here: npm exchanges a short-lived OIDC token for a
+# publish token, so there is no long-lived credential to leak or rotate.
+#
+# This only works once a trusted publisher is configured for the package on
+# npmjs.com (Settings -> Trusted Publisher), naming:
+#   organization  ephillipe
+#   repository    opencode-claude-mem
+#   workflow      publish.yml
+# npm does not validate that configuration when it is saved, so a typo here
+# shows up as ENEEDAUTH at publish time and nowhere earlier.
+#
+# It cannot bootstrap the first release. npm only exposes Trusted Publisher
+# settings on a package that already exists, so 0.1.0 has to be published once
+# from a machine with a token, using scripts/publish.sh. Everything after that
+# is a tag push.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  id-token: write   # required: this is what makes the OIDC token available
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest   # trusted publishing does not support self-hosted
+    steps:
+      - uses: actions/checkout@v6
+
+      # node 24 ships npm 11.6+, above the 11.5.1 floor for trusted publishing.
+      # Bumping the node version below that floor breaks publishing with a
+      # confusing error rather than an obvious one.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false   # never cache in a release build
+
+      # The project installs and tests with bun, and ships bun.lock rather than
+      # package-lock.json. `npm ci` would fail here for want of the latter; npm
+      # is here only to run `npm publish`, which does not read node_modules.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      # The only check that exercises the published bytes: the exports map and
+      # resolution through node_modules are invisible to `bun test`, which
+      # imports src directly.
+      - name: Verify the tarball installs and loads
+        run: ./scripts/verify-tarball.sh
+
+      # A tag is a claim about which version is shipping. Publishing a package
+      # whose version disagrees with its tag produces a release nobody can
+      # reason about afterwards, and the registry will not let you redo it.
+      - name: Refuse a tag that disagrees with package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME says v$tag but package.json says $pkg"
+            exit 1
+          fi
+          echo "publishing $pkg"
+
+      # No --provenance: npm generates it automatically under trusted publishing
+      # from a public repository. No --access: publishConfig.access is public.
+      - name: Publish
+        run: npm publish
