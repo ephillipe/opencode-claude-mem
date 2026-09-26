@@ -43,10 +43,21 @@ jobs:
       # node 24 ships npm 11.6+, above the 11.5.1 floor for trusted publishing.
       # Bumping the node version below that floor breaks publishing with a
       # confusing error rather than an obvious one.
+      # `registry-url` is deliberately ABSENT. Setting it makes setup-node write
+      # an .npmrc containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
+      # and, since this workflow supplies no token, it injects the literal
+      # placeholder `XXXXX-XXXXX-XXXXX-XXXXX`. npm then finds a token already
+      # configured, authenticates with the placeholder, and never performs the
+      # OIDC exchange at all. The registry rejects it and `npm publish` fails
+      # with a 404 "could not be found or you do not have permission" -- which
+      # misleadingly looks like a permissions problem rather than the
+      # misconfiguration it is. Observed on run 36275413515.
+      #
+      # Trusted publishing needs id-token: write and nothing else; npm 11.5.1+
+      # detects the Actions OIDC environment variables on its own.
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false   # never cache in a release build
 
       # The project installs and tests with bun, and ships bun.lock rather than
