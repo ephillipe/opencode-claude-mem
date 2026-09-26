@@ -1,3 +1,7 @@
 node_modules/
 *.tsbuildinfo
 .DS_Store
+
+# npm auth tokens. Publishing uses a token in ~/.npmrc; a
+# project-local .npmrc is redundant and must never be committed.
+.npmrc
