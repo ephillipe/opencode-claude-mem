@@ -26,7 +26,9 @@ This project writes a V2-native replacement.
    allowlist plus per-turn coalescing, not one observation per tool call.
 2. **Inject** relevant prior context into a session, once per session, not on every
    model request.
-3. **Search** on demand via a native tool and a `/memory` command.
+3. **Search** on demand via a native tool and a `/memory` command — and **report
+   honestly when the search backend is unavailable** (see
+   [Endpoint availability](#endpoint-availability-as-measured-on-2026-09-26)).
 4. **Report** health and status so a silent no-op is impossible to mistake for working.
 5. **Never degrade the agent.** No hook may block, throw, or slow the loop.
 
@@ -74,9 +76,48 @@ not from public documentation, because the two disagree.
 | `POST /api/sessions/summarize` | `contentSessionId`, `last_user_message`, `last_assistant_message` | ok | `session.idle` |
 | `POST /api/sessions/complete` | `contentSessionId` | ok | `session.deleted` |
 
-Read: `/api/search`, `/api/search/observations`, `/api/timeline`,
-`/api/context/inject`, `/api/context/recent`, `/api/memory/save`, `/api/instructions`,
-`/api/readiness`, `/api/health`.
+### Endpoint availability, as measured on 2026-09-26
+
+Probed against the running worker on port 37777. This table is the reason the search
+surface is shaped the way it is.
+
+| Endpoint | Status | Response shape |
+|---|---|---|
+| `GET /api/health` | works | JSON |
+| `GET /api/readiness` | works | JSON |
+| `POST /api/sessions/init` | works | JSON — returned `{sessionDbId: 24046, promptNumber: 1, skipped: false}` |
+| `POST /api/sessions/observations` | works | JSON — `{status: "queued"}` |
+| `POST /api/sessions/summarize` | works | JSON — `{status: "queued"}` |
+| `POST /api/sessions/complete` | works | JSON — `{status: "completed", sessionDbId}` |
+| `GET /api/context/inject?projects=` | works | **`text/plain` markdown** |
+| `GET /api/context/recent?project=` | works | JSON `{content: [{type, text}]}` |
+| `GET /api/search/by-file?filePath=` | works | JSON `{content: [{type, text}]}` |
+| `GET /api/search/observations` | **fails** | `{"error":"Chroma connection failed"}` |
+| `GET /api/search/sessions` | **fails** | same Chroma error |
+| `GET /api/search/prompts` | **fails** | same Chroma error |
+| `GET /api/timeline/by-query` | **fails** | same Chroma error |
+
+Three consequences the implementation must honor:
+
+1. **Semantic search is unavailable on this machine.** Every search endpoint except
+   `by-file` requires Chroma, and no Chroma process is running — it is absent from
+   `~/.claude-mem/settings.json` entirely. This is a pre-existing condition of the
+   local claude-mem install, not something this plugin causes or can fix. The worker's
+   own SQLite text search is disabled in favour of Chroma: `searchObservations` warns
+   `"Text search not supported - use ChromaDB for vector search"` and returns `[]`.
+2. **Search must degrade loudly, not silently.** A search tool that returns an empty
+   list when the backend is down is indistinguishable from a project with no memories —
+   exactly the silent no-op this project exists to eliminate. Search therefore returns a
+   discriminated result: results, or an explicit degraded reason. `/mem` reports the
+   degraded backend as a health line.
+3. **Two response shapes exist.** `/api/context/inject` returns raw `text/plain`;
+   everything else returns the MCP-style `{content: [{type, text}]}` envelope. The client
+   normalizes both rather than assuming one.
+
+Writes are **queued**, not synchronous: `observations` and `summarize` return
+`{status: "queued"}`. Read-your-writes is therefore not a valid test, and the queued
+status is the worker's durability boundary — which is exactly why this plugin
+deliberately has no retry queue of its own.
 
 Two version hazards, both handled:
 
