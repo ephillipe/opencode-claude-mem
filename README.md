@@ -115,36 +115,93 @@ never match OpenCode's, so honouring it would look like it filters while doing n
 - `/memory` — inject current project context.
 - `/mem` — worker health, post counters, and recent context.
 
-## Known limitations
+## Fixing search on macOS
 
-### Search needs a running Chroma, and claude-mem will not start it
+Search has two dependencies that nothing in claude-mem keeps alive. Both fail the same way —
+the worker starts, looks healthy, and answers every search with an error — and both are
+outside the plugin's control.
 
-claude-mem's semantic search talks to a Chroma server on `127.0.0.1:8000`. In claude-mem
-10.1.0 the worker only *probes* that server (`GET /api/v2/heartbeat`) and throws if it
-does not answer — the auto-start logic in the same file is never called. So if Chroma is
-not already running, every search endpoint fails.
+**1. Chroma is never started.** Semantic search talks to a Chroma server on
+`127.0.0.1:8000`. In claude-mem 10.1.0 the worker only *probes* that server
+(`GET /api/v2/heartbeat`) and throws if it does not answer; the auto-start code in the same
+file is never called. Nothing ever brings Chroma up, so it must be running before you search.
 
-Start it yourself, against the existing data directory:
+**2. The worker's dependencies disappear on every plugin update.** The worker is a prebuilt
+bundle that `import`s real packages. claude-mem installs those at the marketplace root with
+`bun install`, but the worker runs from a *versioned* plugin cache directory that ships no
+`node_modules`. That directory needs a link to the marketplace install, and a plugin update
+wipes it. The failure is an `ERR_DLOPEN_FAILED` on `libvips-cpp.*.dylib` from deep inside a
+worker that otherwise looks fine.
+
+One command fixes both and keeps them fixed:
+
+```sh
+git clone https://github.com/ephillipe/opencode-claude-mem
+cd opencode-claude-mem
+./scripts/install-claude-mem-durability.sh
+```
+
+It installs two launchd agents into `~/Library/LaunchAgents`:
+
+| Agent | Behaviour |
+|---|---|
+| `dev.ephillipe.claude-mem.chroma` | Runs Chroma against `~/.claude-mem/vector-db`. Starts at login, restarts if it dies. |
+| `dev.ephillipe.claude-mem.deps` | Re-links the worker's dependencies every 5 minutes, so a plugin update cannot leave search broken. Exits when done; no `KeepAlive`, because it is a repair job. |
+
+Chroma is installed into a dedicated venv at `~/.claude-mem/chroma/venv` rather than launched
+with `uvx`, so the agent runs a pinned binary without needing the network at boot.
+
+Repairing the link does not repair a worker that already failed: it caches module loads at
+startup, so a worker that died on `ERR_DLOPEN_FAILED` stays degraded until it restarts. The
+link is back within five minutes either way, and claude-mem starts its own worker on the next
+Claude Code or OpenCode session.
+
+The self-heal agent runs a copy of `scripts/ensure-claude-mem-deps.sh` at
+`~/.claude-mem/bin/`, not the file in the repository. That is not a detail: launchd cannot
+execute a script under `~/Documents`, because macOS treats that directory as
+privacy-protected and grants a spawned agent no access to it. The copy lives in your home
+directory, so you can move or delete the clone afterwards. Re-run the installer if you
+upgrade this repository, to refresh the copy and the plists.
+
+Remove them with `./scripts/install-claude-mem-durability.sh --uninstall`. That leaves the
+venv, your embeddings, and the dependency symlinks in place.
+
+### Doing it by hand instead
+
+If you would rather not install agents, start Chroma yourself:
 
 ```sh
 uvx --from chromadb chroma run --path ~/.claude-mem/vector-db --host 127.0.0.1 --port 8000
 ```
 
-This plugin does not paper over that. When the backend is unavailable, `claude_mem_search`
-and `/memory` say so explicitly and name the reason, because an empty result would be
-indistinguishable from a project that genuinely has no memories. Writes and context
-injection are unaffected.
-
-Check with:
+And re-link the worker's dependencies after a claude-mem update:
 
 ```sh
-curl -s "http://127.0.0.1:37777/api/search/observations?query=test&limit=1"
+ln -s ~/.claude/plugins/marketplaces/thedotmack/node_modules \
+      ~/.claude/plugins/cache/thedotmack/claude-mem/<version>/node_modules
+```
+
+`scripts/ensure-claude-mem-deps.sh` does that part idempotently, and `--check` turns it into a
+health check. It validates the target before linking to it, and moves an existing but unusable
+tree aside rather than deleting it.
+
+### Verifying
+
+```sh
+curl -s "http://127.0.0.1:37777/api/search/observations?query=test&limit=1"   # your configured port
 # {"content":[{"type":"text","text":"No observations found matching \"test\""}]}  ← working
 # {"error":"Chroma connection failed: ..."}                                    ← broken
 ```
 
-Note the `query` parameter. The worker's filter-only branch (filtering by `project`
-without a `query`) throws `Expected each document to be a string, but got undefined`.
+Note the `query` parameter. The worker's filter-only branch (filtering by `project` without a
+`query`) throws `Expected each document to be a string, but got undefined`, so the plugin
+always sends one.
+
+A `claude_mem_search` error names which of the two causes it is rather than returning an empty
+list, because an empty list is indistinguishable from a project that genuinely has no memories.
+Writes and context injection are unaffected by either failure.
+
+## Known limitations
 
 ### Old memories fall outside a hardcoded 90-day window
 
