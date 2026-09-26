@@ -37,19 +37,34 @@ The worker port is resolved in this order: `CLAUDE_MEM_WORKER_PORT`, then
 cd ~/.config/opencode && bun add @ephillipe/opencode-claude-mem
 ```
 
-Then add it to your existing `opencode.jsonc`:
+Then add it to your existing `opencode.jsonc`. The key is `plugin`, singular, and each
+entry is either a bare package name or a `[name, options]` pair:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": [{ "package": "@ephillipe/opencode-claude-mem", "options": {} }]
+  "plugin": ["@ephillipe/opencode-claude-mem"]
 }
 ```
+
+Check it took with `opencode debug config`, which lists the resolved sources. Note that
+the resolved output spells the key `plugins`, plural, even though the key you write is
+`plugin` — so grep for the package name rather than trusting the key name:
+
+```console
+$ opencode debug config | grep -A2 '"plugins"'
+  "plugins": [
+    "@ephillipe/opencode-claude-mem"
+  ]
+```
+
+The plugin registers a `claude_mem_search` tool and `/memory`, so seeing those in a
+session is the real confirmation.
 
 For local development, point at a clone instead:
 
 ```jsonc
-"plugins": [{ "package": "file:///absolute/path/to/opencode-claude-mem" }]
+"plugin": ["file:///absolute/path/to/opencode-claude-mem"]
 ```
 
 Do **not** use `npx claude-mem install --ide opencode`. That is the V1 installer; it
@@ -57,27 +72,24 @@ creates a competing `opencode.json` and installs a plugin V2 does not read.
 
 ## Configuration
 
-Everything is optional. Pass `options` in the `plugins` array:
+Everything is optional. To pass options, use the `[name, options]` form:
 
 ```jsonc
 {
-  "plugins": [{
-    "package": "@ephillipe/opencode-claude-mem",
-    "options": {
-      "enabled": true,
-      "capture": {
-        "tools": ["read", "edit", "write", "patch", "apply_patch", "bash", "grep", "glob"],
-        "assistantText": true,
-        "minAssistantChars": 200,
-        "maxBufferEntries": 20,
-        "maxBufferChars": 4000,
-        "flushDebounceMs": 5000
-      },
-      "inject": { "enabled": true, "maxChars": 8000 },
-      "worker": { "host": null, "port": null, "timeoutMs": 5000 },
-      "project": { "name": null }
-    }
-  }]
+  "plugin": [["@ephillipe/opencode-claude-mem", {
+    "enabled": true,
+    "capture": {
+      "tools": ["read", "edit", "write", "patch", "apply_patch", "bash", "grep", "glob"],
+      "assistantText": true,
+      "minAssistantChars": 200,
+      "maxBufferEntries": 20,
+      "maxBufferChars": 4000,
+      "flushDebounceMs": 5000
+    },
+    "inject": { "enabled": true, "maxChars": 8000 },
+    "worker": { "host": null, "port": null, "timeoutMs": 5000 },
+    "project": { "name": null }
+  }]]
 }
 ```
 
