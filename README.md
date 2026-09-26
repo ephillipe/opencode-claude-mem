@@ -115,11 +115,20 @@ never match OpenCode's, so honouring it would look like it filters while doing n
 - `/memory` — inject current project context.
 - `/mem` — worker health, post counters, and recent context.
 
-## Known limitation: search needs Chroma
+## Known limitations
 
-claude-mem's semantic search depends on a Chroma server. **If Chroma is not running, text
-search returns nothing** — the worker's own SQLite fallback is disabled in favour of
-Chroma.
+### Search needs a running Chroma, and claude-mem will not start it
+
+claude-mem's semantic search talks to a Chroma server on `127.0.0.1:8000`. In claude-mem
+10.1.0 the worker only *probes* that server (`GET /api/v2/heartbeat`) and throws if it
+does not answer — the auto-start logic in the same file is never called. So if Chroma is
+not already running, every search endpoint fails.
+
+Start it yourself, against the existing data directory:
+
+```sh
+uvx --from chromadb chroma run --path ~/.claude-mem/vector-db --host 127.0.0.1 --port 8000
+```
 
 This plugin does not paper over that. When the backend is unavailable, `claude_mem_search`
 and `/memory` say so explicitly and name the reason, because an empty result would be
@@ -129,9 +138,27 @@ injection are unaffected.
 Check with:
 
 ```sh
-curl -s "http://127.0.0.1:37777/api/search/observations?project=x&limit=1"
-# {"error":"Chroma connection failed: ..."}  ← search is unavailable
+curl -s "http://127.0.0.1:37777/api/search/observations?query=test&limit=1"
+# {"content":[{"type":"text","text":"No observations found matching \"test\""}]}  ← working
+# {"error":"Chroma connection failed: ..."}                                    ← broken
 ```
+
+Note the `query` parameter. The worker's filter-only branch (filtering by `project`
+without a `query`) throws `Expected each document to be a string, but got undefined`.
+
+### Old memories fall outside a hardcoded 90-day window
+
+Worker 10.1.0 filters search results to `RECENCY_WINDOW_DAYS: 90`, hardcoded and not
+configurable. Anything older simply cannot be found by search, however healthy Chroma is.
+Check what is actually reachable:
+
+```sh
+sqlite3 ~/.claude-mem/vector-db/chroma.sqlite3 \
+  "select count(*) from embedding_metadata where key='created_at_epoch'"
+```
+
+If your corpus predates the window, search will return valid, empty results. New
+observations are indexed normally, so the window refills over time.
 
 ## How the worker is spoken to
 

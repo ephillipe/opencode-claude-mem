@@ -58,8 +58,16 @@ export async function startFakeWorker(): Promise<FakeWorker> {
           return send(200, envelope(`# Recent\n\nnothing for ${url.searchParams.get("project") ?? ""}`))
         case "/api/search/by-file":
           return send(200, envelope("No results found."))
-        case "/api/search/observations":
-          return searchBroken ? send(500, { error: searchBroken }) : send(200, { results: [] })
+        case "/api/search/observations": {
+          // Mirrors worker 10.1.0: the filter-only branch (no `query`) throws on
+          // this data set, and a dead Chroma fails every semantic query.
+          const query = url.searchParams.get("query")
+          if (!query) {
+            return send(500, { error: "Expected each document to be a string, but got undefined" })
+          }
+          if (searchBroken) return send(500, { error: searchBroken })
+          return send(200, envelope(`No observations found matching "${query}"`))
+        }
         default:
           return send(404, { error: "not found" })
       }

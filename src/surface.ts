@@ -76,7 +76,7 @@ export function searchToolDef(client: WorkerClient, project: string): ToolDef {
     execute: async (input, context) => {
       const query = typeof input?.query === "string" ? input.query.trim() : ""
       if (query.length === 0) return { content: "claude-mem: empty query." }
-      const result = await client.searchObservations(project, 10, context.signal)
+      const result = await client.searchObservations(query, project, 10, context.signal)
       return { content: result.ok ? result.text : degradedBody(result.reason) }
     },
   }
@@ -99,7 +99,7 @@ export function memoryCommandDef(args: {
         return
       }
 
-      const result = await args.client.searchObservations(args.project, 10)
+      const result = await args.client.searchObservations(query, args.project, 10)
       await args.reply(
         result.ok
           ? `claude-mem results for "${query}":\n\n${result.text}`

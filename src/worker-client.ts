@@ -208,12 +208,21 @@ export class WorkerClient {
     return readText(r.data)
   }
 
+  /**
+   * The query is not optional in practice: the worker's filter-only branch (no
+   * `query` param) throws "Expected each document to be a string, but got
+   * undefined" on this data set, so a caller must always supply one.
+   */
   async searchObservations(
+    query: string,
     project: string,
     limit: number,
     signal?: AbortSignal,
   ): Promise<SearchResult> {
-    const q = `?project=${encodeURIComponent(project)}&limit=${limit}`
+    const q =
+      `?query=${encodeURIComponent(query)}` +
+      `&project=${encodeURIComponent(project)}` +
+      `&limit=${limit}`
     const r = await this.request(`/api/search/observations${q}`, { method: "GET", signal })
     if (!r.ok) {
       this.counters.failures++

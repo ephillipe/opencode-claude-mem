@@ -84,17 +84,42 @@ describe("read endpoints", () => {
     expect(await client.searchByFile("README.md")).toBe("No results found.")
   })
 
+  it("sends the query, project and limit on the wire", async () => {
+    await client.searchObservations("coalescing bug", "proj", 7)
+    const q = fw.calls.at(-1)!.query
+    expect(q.get("query")).toBe("coalescing bug")
+    expect(q.get("project")).toBe("proj")
+    expect(q.get("limit")).toBe("7")
+  })
+
+  it("url-encodes a query with spaces and punctuation", async () => {
+    await client.searchObservations("fix the auth bug?", "p", 3)
+    const url = fw.calls.at(-1)!
+    expect(url.query.get("query")).toBe("fix the auth bug?")
+  })
+
   it("returns a degraded reason instead of empty results when search is down", async () => {
-    const r = await client.searchObservations("p", 5)
+    const r = await client.searchObservations("anything", "p", 5)
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toContain("Chroma")
+  })
+
+  it("reports the worker's filter-only error verbatim when the query is dropped", async () => {
+    // Regression guard: the worker 10.1.0 filter-only branch throws instead of
+    // searching, so a dropped query would surface as this opaque message.
+    const bare = await fetch(`${client.baseUrl}/api/search/observations?project=p&limit=2`)
+    expect(bare.ok).toBe(false)
+    expect(((await bare.json()) as { error: string }).error).toContain(
+      "Expected each document to be a string",
+    )
   })
 
   it("returns results when the search backend is healthy", async () => {
     fw.setSearchBroken(null)
     try {
-      const r = await client.searchObservations("p", 5)
+      const r = await client.searchObservations("anything", "p", 5)
       expect(r.ok).toBe(true)
+      if (r.ok) expect(r.text).toContain("anything")
     } finally {
       fw.setSearchBroken("Chroma connection failed: Chroma server not reachable.")
     }

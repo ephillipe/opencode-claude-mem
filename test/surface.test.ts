@@ -91,6 +91,20 @@ describe("searchToolDef", () => {
     }
   })
 
+  it("forwards the user's query to the worker", async () => {
+    // Regression guard: the tool used to validate the query and then drop it,
+    // searching by project alone — which the worker rejects outright.
+    const fw = await startFakeWorker()
+    try {
+      fw.setSearchBroken(null)
+      const def = searchToolDef(new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 }), "proj")
+      await def.execute({ query: "why did the buffer coalesce" }, {})
+      expect(fw.calls.at(-1)!.query.get("query")).toBe("why did the buffer coalesce")
+    } finally {
+      await fw.close()
+    }
+  })
+
   it("rejects an empty query without calling the worker", async () => {
     const fw = await startFakeWorker()
     try {
@@ -125,6 +139,25 @@ describe("memoryCommandDef", () => {
       await def.execute(invocation("coalescing bug"))
       expect(fw.calls.some((c) => c.path === "/api/search/observations")).toBe(true)
       expect(sent).toHaveLength(1)
+    } finally {
+      await fw.close()
+    }
+  })
+
+  it("forwards the command's query text to the worker", async () => {
+    const fw = await startFakeWorker()
+    try {
+      fw.setSearchBroken(null)
+      const sent: string[] = []
+      const def = memoryCommandDef({
+        client: new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 }),
+        project: "proj",
+        reply: async (body) => {
+          sent.push(body)
+        },
+      })
+      await def.execute(invocation("the coalescing bug"))
+      expect(fw.calls.at(-1)!.query.get("query")).toBe("the coalescing bug")
     } finally {
       await fw.close()
     }
