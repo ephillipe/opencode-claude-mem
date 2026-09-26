@@ -9,7 +9,8 @@
   "files": ["src", "README.md", "LICENSE"],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run typecheck && bun test"
   },
   "keywords": ["opencode", "opencode-plugin", "claude-mem", "memory"],
   "dependencies": {
