@@ -26,7 +26,7 @@ This project writes a V2-native replacement.
    allowlist plus per-turn coalescing, not one observation per tool call.
 2. **Inject** relevant prior context into a session, once per session, not on every
    model request.
-3. **Search** on demand via native tools and a `/memory` command.
+3. **Search** on demand via a native tool and a `/memory` command.
 4. **Report** health and status so a silent no-op is impossible to mistake for working.
 5. **Never degrade the agent.** No hook may block, throw, or slow the loop.
 
@@ -36,10 +36,12 @@ This project writes a V2-native replacement.
 - Starting, supervising, or restarting the claude-mem worker. It is already installed
   and running; the plugin only talks to it.
 - Retry queues or offline durability. The worker already owns queueing and recovery.
-- Replacing claude-mem's MCP server. The MCP entry stays available as a parallel,
-  manually-invoked recall path; this plugin does not remove or duplicate it.
-- Modifying `~/.config/opencode/opencode.json` or creating any competing config file.
-  The user's existing `opencode.jsonc` stays authoritative.
+- Removing claude-mem's MCP server. It stays configured as it is today. It does overlap
+  with the native `claude_mem_search` tool, so the MCP entry can be dropped from
+  `mcp.servers` if the duplication is unwanted — that is a config choice left to the
+  user, not something this plugin does.
+- Modifying or creating any competing OpenCode config file. The user's existing
+  `opencode.jsonc` stays authoritative.
 
 ## Environment as verified
 
@@ -56,7 +58,8 @@ This project writes a V2-native replacement.
 **The project-naming fact drives a design decision.** Every existing session is named
 after its directory basename. If this plugin reports a different `project` value, the
 entire existing corpus becomes invisible to `?project=` filters. So the project name is
-`basename(project.canonical ?? project.directory)`, and nothing else.
+`basename(ctx.location.project.canonical ?? ctx.location.project.directory)`, and
+nothing else.
 
 ## Worker API contract (v10.1.0, verified from the bundle)
 
@@ -64,14 +67,12 @@ Read from
 `~/.claude/plugins/cache/thedotmack/claude-mem/10.1.0/scripts/worker-service.cjs`,
 not from public documentation, because the two disagree.
 
-Write:
-
-| Endpoint | Body | Returns |
-|---|---|---|
-| `POST /api/sessions/init` | `contentSessionId`, `project`, `prompt` | `{ sessionDbId, promptNumber, skipped }` |
-| `POST /api/sessions/observations` | `contentSessionId`, `tool_name`, `tool_input`, `tool_response`, `cwd` | ok |
-| `POST /api/sessions/summarize` | `contentSessionId`, `last_user_message`, `last_assistant_message` | ok |
-| `POST /api/sessions/complete` | `contentSessionId` | ok |
+| Endpoint | Body | Returns | Called from |
+|---|---|---|---|
+| `POST /api/sessions/init` | `contentSessionId`, `project`, `prompt` | `{ sessionDbId, promptNumber, skipped }` | `session` hook `"prompt"` |
+| `POST /api/sessions/observations` | `contentSessionId`, `tool_name`, `tool_input`, `tool_response`, `cwd` | ok | buffer flush |
+| `POST /api/sessions/summarize` | `contentSessionId`, `last_user_message`, `last_assistant_message` | ok | `session.idle` |
+| `POST /api/sessions/complete` | `contentSessionId` | ok | `session.deleted` |
 
 Read: `/api/search`, `/api/search/observations`, `/api/timeline`,
 `/api/context/inject`, `/api/context/recent`, `/api/memory/save`, `/api/instructions`,
@@ -88,63 +89,97 @@ Two version hazards, both handled:
 
 ## Architecture
 
-Five units. The first four are pure — no `ctx`, no OpenCode import, testable in
-isolation.
+Five pure units, one entry, and one adapter that is the only thing allowed to touch
+OpenCode.
 
 ```
 src/
-  index.ts          default export: Plugin.define({ id, setup })  → delegates to register
-  register.ts       the ONLY file that touches ctx.*  (the V1/V2 seam)
-  config.ts         options + env + settings.json resolution
-  worker-client.ts  port discovery, fetch, timeouts, fail-soft, counters
-  session-registry.ts  per-session state, once-only injection flag, flush serialization
-  capture.ts        filter predicate + coalescing buffer
-  surface.ts        native tool + /memory command + /mem status
+  index.ts            default export: Plugin.define({ id, setup }) → delegates to register
+  register.ts         the ONLY file that reads ctx.*  (the V1/V2 seam)
+  config.ts           options + env + settings.json resolution
+  worker-client.ts    port discovery, fetch, timeouts, fail-soft, counters
+  session-registry.ts per-session state, one-shot gates, flush serialization
+  capture.ts          filter predicate + coalescing buffer
+  surface.ts          pure tool/command definitions + handlers
 ```
 
-`register.ts` is the only place with any knowledge of OpenCode. Everything else is
-plain TypeScript over `fetch`. This is the structural answer to "will V1 support
-increase complexity too much" — it does not, later, and it must not now.
+The seam is enforced by construction, not by convention: `register.ts` reads `ctx` and
+calls into the five pure units, and nothing in those five units imports
+`@opencode/plugin` or names a `ctx` property. `surface.ts` therefore describes tools and
+commands as **plain data plus handler functions** — no `ctx.tool.transform`, no
+`ctx.command.transform`. `register.ts` performs the wiring.
 
-### Why there is no `register.ts` import of types
-
-The plugin imports `@opencode/plugin` for the V2 types only. `@opencode-ai/plugin`
-(the V1 package) is **not** a dependency. V2-only is the decision; V1 compatibility is a
-seam, not a second implementation.
+This is the structural answer to "will V1 support increase complexity too much": not
+now, and barely later.
 
 ## Hook registrations
 
-Four registrations, all under `ctx`.
+Five registrations, all under `ctx`.
 
 | Hook | Responsibility |
 |---|---|
-| `ctx.tool.hook("execute.after")` | Filter against the allowlist, push onto the per-session buffer, return. |
+| `ctx.session.hook("prompt")` | First admission for a session → `POST /api/sessions/init` with the prompt text. |
 | `ctx.session.hook("context")` | (a) inject context, once per session; (b) harvest the last assistant message, deduped by message id. |
+| `ctx.tool.hook("execute.after")` | Filter against the allowlist, push onto the per-session buffer, return. |
 | `ctx.event.subscribe({ signal })` | `session.idle` → flush buffer + `POST /api/sessions/summarize`. `session.deleted` → `POST /api/sessions/complete`, drop registry entry. |
-| `ctx.command.transform()` | `/memory <query>` targeted recall; `/mem` status + recent context. |
+| `ctx.tool.transform()` / `ctx.command.transform()` | Register `claude_mem_search` and the `/memory` + `/mem` commands. |
 
-`session.idle` is the single summarize trigger. A separate `ctx.session.hook("compaction")`
-registration is deliberately **not** added: compaction is a subset of idle, so
-registering both would double-post.
+### Why session init hangs off `prompt`, not `context`
 
-### The `context` hook fires more than once per turn
+`/api/sessions/init` needs the user's opening text and must run once per session. The
+`prompt` hook is the precise fit: the docs state it "runs once during admission, not
+before every model call", and it exposes the mutable `prompt` draft with `text`. The
+`context` hook is the wrong place — it fires on every model call, so init there would
+either need its own gate or post a duplicate. `prompt` also documents that retrying an
+already-admitted message id returns the original admission **without rerunning hooks**,
+which makes the gate safe rather than merely hopeful.
 
-This hook runs per model request, not per session. Both of its duties must therefore be
-idempotent:
+The registry carries an `initialized` flag per session, set after a successful init.
+Responses are not required: `skipped` is a valid outcome and still marks the session as
+initialized.
 
-- **Injection** is gated by a per-session `injected` flag in the registry, set the first
-  time injection runs and never cleared for the session's life.
-- **Assistant-message harvest** is gated by the last-seen message id. The hook receives
-  `event.messages`; the last message with `role === "assistant"` is compared against
-  `registry.lastAssistantMessageId`. Seen before → skip.
+### Why there is no `compaction` hook
+
+`ctx.session.hook("compaction")` exists and exposes the transcript being summarized, so
+it is a plausible summarize trigger. It is not registered because `session.idle` already
+fires once per turn, which is the granularity a per-turn memory wants. Compaction is
+*rarer* than idle, not a subset of it, so registering both would add occasional
+duplicate summaries and buy a different transcript for no benefit. If turn-level
+summarization is ever dropped, compaction is the replacement.
+
+### The `context` hook fires on every model call
+
+Documented: `context` "runs for the agent loop, including tool-driven continuations."
+Both of its duties must therefore be idempotent:
+
+- **Injection** is gated by a per-session `injected` flag, set the first time injection
+  runs and never cleared for the session's life.
+- **Assistant-message harvest** is gated by the last-seen message id. The event carries
+  `messages: Message[]`; the last message with `role === "assistant"` is compared
+  against `registry.lastAssistantMessageId`. Already seen → skip.
 
 `chat.message` would be the natural hook for assistant text, but it has no clean V2
 equivalent. Reading the last assistant message out of `event.messages` is the V2-native
 substitute, and the message id is the natural dedup key.
 
-### The tool hook event shape
+### Verified event shapes
 
-Verified from the V2 plugin docs:
+```ts
+interface SessionRequestHook {
+  readonly sessionID: string
+  readonly model: { providerID: string; id: string; variant?: string }
+  system: SystemPart[]          // injection: event.system.push({ type: "text", text })
+  messages: Message[]           // harvest: last role === "assistant"
+  options: { ... } & Record<string, unknown>
+}
+
+interface SessionContextHook extends SessionRequestHook {
+  readonly agent: string
+  tools: Record<string, { description: string; input: JsonSchema }>
+}
+```
+
+The tool hook event is a **single object**, not the V1 `(input, output)` pair:
 
 ```ts
 await ctx.tool.hook("execute.after", (event) => {
@@ -153,14 +188,21 @@ await ctx.tool.hook("execute.after", (event) => {
 })
 ```
 
-So the event is a **single object**, not the V1 `(input, output)` pair. Fields used:
-`event.tool`, `event.status` (`"completed" | "error"`), `event.input`, `event.result`,
-`event.error`, and `event.sessionID`.
+Fields used from it: `event.tool`, `event.status` (`"completed" | "error"`),
+`event.input`, `event.result`, `event.error`, and a session id.
 
-`event.sessionID` is the one field name inferred rather than read from the docs. The
-implementation reads it defensively — `event.sessionID ?? event.properties?.sessionID` —
-and treats a missing session id as "skip capture" instead of throwing. The first smoke
-test logs the event once to confirm the real name.
+**One field remains unverified.** `sessionID` is confirmed on `SessionRequestHook` (and
+therefore on `context`), but the `execute.after` event is typed
+`ToolExecuteCompleted | ToolExecuteFailed`, whose definition the docs reference rather
+than print. Its session-id field name is therefore inferred. The implementation reads
+it defensively — `event.sessionID ?? event.properties?.sessionID` — and treats a missing
+session id as "skip capture" instead of throwing. The smoke test logs one such event
+verbatim to settle it before capture is trusted.
+
+`session.idle` and `session.deleted` are confirmed from this machine's observed runtime
+event stream, not from the docs, which only reference the `V2EventEncoded` schema. The
+event handler is a `switch` with a no-op default, so an unrecognized event type is inert
+rather than an error.
 
 ## The no-blocking rule
 
@@ -168,6 +210,10 @@ test logs the event once to confirm the real name.
 `execute.after` callback pushes to an in-memory buffer and returns synchronously. The
 flush happens on a detached timer. The V1 plugin got this right with fire-and-forget
 `fetch().catch()`; that instinct is preserved.
+
+The same rule governs tool and command executors: they *may* await, because the model is
+already waiting on their result, but they pass `context.signal` into `fetch` so that
+stopping the session cancels the request instead of leaking it.
 
 ## Coalescing
 
@@ -189,11 +235,11 @@ arrives. On flush, the entire buffer becomes **one** observation:
 ```
 POST /api/sessions/observations
 {
-  contentSessionId, claudeSessionId,
+  contentSessionId, claudeSessionId, platformSource: "opencode",
   tool_name: "turn_summary",
   tool_input: { tools: ["read", "edit", "bash"], files: ["src/a.ts", "src/b.ts"] },
   tool_response: "<rendered, capped at maxBufferChars>",
-  cwd: "<project directory>"
+  cwd: "<ctx.location.directory>"
 }
 ```
 
@@ -208,7 +254,7 @@ and could reorder observations; a per-session promise chain prevents it.
 
 Priority, highest first:
 
-1. `options` in the `plugins` array in `opencode.jsonc`
+1. `ctx.options` — the `options` object in the `plugins` array in `opencode.jsonc`
 2. `CLAUDE_MEM_*` environment variables
 3. `~/.claude-mem/settings.json`
 4. Built-in defaults
@@ -230,11 +276,14 @@ Priority, highest first:
 }
 ```
 
+Invalid values fall back to the default rather than throwing — a typo in a config file
+must not take the plugin down.
+
 `capture.tools` is an **allowlist**, matched against OpenCode tool names: `read`,
 `write`, `edit`, `apply_patch`, `bash`, `grep`, `glob`, `list`, `patch`, `todowrite`,
-`todoread`, `webfetch`, `task`. Only listed tools are buffered. A tool appearing in the
-allowlist that does not exist in the current OpenCode version is ignored, not an error —
-the tool surface moves.
+`todoread`, `webfetch`, `task`. Only listed tools are buffered. A tool in the allowlist
+that does not exist in the current OpenCode version is ignored, not an error — the tool
+surface moves.
 
 Note: `~/.claude-mem/settings.json` has `CLAUDE_MEM_SKIP_TOOLS` listing Claude Code tool
 names only. Those names will never match OpenCode's, so that setting is inert here and
@@ -263,10 +312,56 @@ wrapped so that no failure escapes. A counter object tracks `posted`, `dropped`,
   port, then capture disabled. Everything else still works.
 - At runtime, any worker error is swallowed and counted. Nothing propagates into a hook.
 - If the worker is down mid-session, the buffer keeps accepting and drops on cap. No
-  retry queue, no backoff — the worker owns recovery, and a retry loop from inside a
+  retry queue, no backoff — the worker owns recovery, and a retry loop started inside a
   hook is exactly the kind of thing that stalls the agent loop.
 - `/mem` surfaces `posted` / `dropped` / `failures` / worker health, so a silent no-op is
   visible rather than inferred.
+
+## Surface: tool and commands
+
+Tool registration uses `ctx.tool.transform`, whose callback must be **synchronous** — the
+docs require external data to be loaded before the callback, never inside it. That is
+naturally satisfied here because `surface.ts` registers a definition whose `execute`
+fetches lazily at invoke time, not at registration time.
+
+```ts
+editor.namespace({ name: "claude_mem", description: "claude-mem recall" })
+editor.add({
+  name: "search",
+  description: "Search prior sessions stored by claude-mem",
+  input: { type: "object", properties: { query: { type: "string" } },
+           required: ["query"], additionalProperties: false },
+  options: { namespace: "claude_mem" },
+  execute: async (input, context) => ({ content: await search(input.query, context.signal) }),
+})
+```
+
+The effective tool id is `claude_mem_search`.
+
+**Commands do not take positional arguments.** `CommandInvocation` is exactly
+`{ sessionID, prompt, delivery }` — there is no `args` field. So `/memory` reads its
+query from `prompt.text`, the text the user typed after the command name.
+
+**Commands post back; they do not return.** To surface output, a command calls
+`ctx.session.prompt({ ...prompt, sessionID, text, delivery })`, exactly as the documented
+`security-review` example does. So `/memory <query>` posts results into the session as a
+prompt, and `/mem` posts counters and worker health the same way. `delivery` is
+`"steer" | "queue"` and is passed through untouched.
+
+`CommandEditor` exposes only `add`, so commands are additive. There is no removal API
+and no need for one.
+
+## Lifecycle and cleanup
+
+`setup` returns a cleanup function, per the documented lifecycle:
+
+- abort the `ctx.event.subscribe` stream via its `AbortController`
+- clear every pending debounce timer
+- flush any non-empty buffer once, best-effort
+
+Registrations from `ctx.*.hook` and `ctx.*.transform` are disposable via
+`registration.dispose()`, and unloading the plugin disposes them automatically; the
+cleanup function exists for the timers and the event stream, which are not registrations.
 
 ## Packaging
 
@@ -286,8 +381,8 @@ wrapped so that no failure escapes. A counter object tracks `posted`, `dropped`,
 ```
 
 `files` **must** include `src`, because `exports` points into it. A `files: ["dist"]`
-would produce a tarball whose entrypoint does not exist, and the failure would only
-appear at install time on someone else's machine.
+would produce a tarball whose entrypoint does not exist, and the failure would surface
+only at install time on someone else's machine.
 
 The npm name is scoped; the GitHub repo keeps the unscoped name `opencode-claude-mem`.
 The unscoped npm name is held by an unrelated maintainer whose repository no longer
@@ -316,9 +411,9 @@ cd ~/.config/opencode && bun add @ephillipe/opencode-claude-mem
 "plugins": [{ "package": "file:///absolute/path/to/opencode-claude-mem" }]
 ```
 
-**Not** `npx claude-mem install --ide opencode` — that is the V1 installer which
-creates a competing `~/.config/opencode/opencode.json` and installs a plugin that V2
-does not read.
+**Not** `npx claude-mem install --ide opencode` — that is the V1 installer, which
+creates a competing `~/.config/opencode/opencode.json` and installs a plugin V2 does
+not read.
 
 ## Publish
 
@@ -336,7 +431,8 @@ npm publish --access public # scopes are private by default
 After 0.1.0, `npm version patch` (or `minor` for breaking, while pre-1.0) then
 `npm publish`. `npm version` commits and tags.
 
-Verify the **installed** package, not the workspace copy:
+Verify the **installed** package, not the workspace copy — the docs are explicit that
+the installed package is what matters:
 
 ```sh
 mkdir -p /tmp/ocm-check && cd /tmp/ocm-check && npm init -y >/dev/null
@@ -347,7 +443,7 @@ node -e "import('@ephillipe/opencode-claude-mem').then(m=>console.log(Object.key
 
 ## Testing
 
-**Unit tests run against a fake worker** — a ~40-line Node HTTP server implementing the
+**Unit tests run against a fake worker** — a small Node HTTP server implementing the
 five endpoints. No second worker instance, no writes to the 656 MB store, no risk of
 polluting 1,707 real sessions. This is the only automated layer.
 
@@ -357,13 +453,15 @@ polluting 1,707 real sessions. This is the only automated layer.
 - filter predicate — allowlist matching, unknown tool names, case.
 - coalescing buffer — flush boundaries at both caps, debounce timing, drop-oldest
   behavior, per-session serialization under concurrent flushes, assistant-text floor.
-- `session-registry` — injection happens exactly once, message-id dedup, entry cleanup
-  on `session.deleted`.
+- `session-registry` — init and injection each happen exactly once, message-id dedup,
+  entry cleanup on `session.deleted`.
+- `surface` — `/memory` parses its query out of `prompt.text` (not `args`), and posts
+  back with the delivery mode it was given.
 
 **Then one manual smoke test** against the real worker, using a throwaway
 `contentSessionId` prefixed `ocm-smoke-` and a throwaway project name, so residue is
-identifiable and deletable. It also logs one `execute.after` event verbatim to confirm
-`event.sessionID`.
+identifiable and deletable. It also logs one `execute.after` event verbatim to settle the
+session-id field name.
 
 No automated test touches the real database.
 
@@ -371,10 +469,11 @@ No automated test touches the real database.
 
 | Risk | Mitigation |
 |---|---|
-| `event.sessionID` field name inferred, not documented | Defensive read; skip capture if absent; confirmed by the smoke test before capture is trusted. |
+| `execute.after` session-id field inferred, not documented | Defensive read; skip capture if absent; settled by the smoke test before capture is trusted. |
 | Worker version drift (10.1.0 here, 13.x public docs) | Send both session-id field names; tolerate unknown response fields. |
 | `session.idle` timing differs from expectation | Buffer caps bound the damage; the debounce flush is independent of idle. |
-| Injection fires more than once | Explicit `injected` flag in the registry, not a heuristic. |
+| `context` fires on every model call | Explicit `injected` and `lastAssistantMessageId` gates, not heuristics. |
+| Commands silently do nothing if `/memory` is read as arg-based | Query comes from `prompt.text`, verified against `CommandInvocation`; covered by a unit test. |
 | Accidental DB pollution during testing | Fake worker in CI; prefixed, disposable identifiers for the manual test. |
 | Plugin loads but does nothing | `/mem` reports counters and health; the setup health probe warns loudly. |
 
@@ -384,24 +483,29 @@ No automated test touches the real database.
 `id` + `setup()` for V2, on the same default export — so the cost is not the plumbing,
 it is that three of the five units get written a second time against an incompatible
 API. Injection on V1 would have to use `experimental.chat.system.transform`, which
-OpenCode's own migration guide notes has no clean successor, and `/memory <query>`
-cannot be a hook on V1 at all. Supporting it doubles the test matrix with a real V1
-install to maintain, buys nothing if the goal is a PR to claude-mem (which targets V2),
-and the V1 loader's export iteration is itself implicated in issue #4197.
+OpenCode's own migration guide notes has no clean successor, and `/memory` cannot be a
+positional-argument command on V1 at all — it would have to be a markdown command file.
+Supporting it doubles the test matrix with a real V1 install to maintain, buys nothing if
+the goal is a PR to claude-mem (which targets V2), and the V1 loader's export iteration
+is itself implicated in issue #4197.
 
-The cost of keeping the door open is therefore near zero: `register.ts` confines every
-`ctx.*` access to one file, and the default export is a plain object. Adding V1 later
-is one new file plus a spread — with `Plugin.define(...)` spread alongside `server()` so
-the two type-check separately, as the V2 docs instruct.
+The cost of keeping the door open is near zero: `register.ts` confines every `ctx.*`
+access to one file and `surface.ts` is pure data, so adding V1 later is one new
+`register.v1.ts` plus a spread — with `Plugin.define(...)` spread alongside `server()` so
+the two type-check separately, as the V2 docs instruct. The V1 object form requires
+OpenCode `1.18.29` or newer; older V1 releases expect function exports.
 
 ## Definition of done
 
 - Plugin loads on OpenCode 2.0.16 with no console errors; `id` and `setup` present on
   the default export.
 - A turn that edits files produces exactly one `turn_summary` observation, plus at most
-  one `assistant_message` — verifiable via `/api/search/observations`.
+  one `assistant_message`, and exactly one `init` for the session — read back from the
+  worker's observations endpoint.
 - A new session injects context exactly once, not on every model request.
-- `/memory <query>` returns results; `/mem` shows counters and worker health.
+- `claude_mem_search` returns results; `/memory <query>` posts results into the session
+  and `/mem` posts counters and worker health.
+- Plugin unload aborts the event stream and clears timers.
 - Worker stopped: one warning, no thrown errors, agent loop unaffected.
 - `npm publish --dry-run` tarball contains `src/`, `README.md`, `LICENSE`.
 - Installed-package smoke test passes from a clean directory.
