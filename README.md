@@ -267,8 +267,11 @@ and npm attaches a provenance attestation automatically.
 
 It needs a trusted publisher configured once on npmjs.com, under the package's
 **Settings → Trusted Publisher**: organization `ephillipe`, repository `opencode-claude-mem`,
-workflow `publish.yml`. npm does not validate that configuration when you save it, so a typo
-there surfaces only as `ENEEDAUTH` at publish time.
+workflow `publish.yml`, and — this one is easy to miss — **allowed actions must include
+`npm publish`**. Publishers created after 2026-09-03 default to allowing only `npm stage
+publish`, which holds a release for human 2FA approval instead of shipping it. npm does not
+validate any of these fields when you save them, so a typo surfaces only as `ENEEDAUTH` at
+publish time.
 
 It cannot bootstrap the first release: npm only offers Trusted Publisher settings on a package
 that already exists. So `v0.1.0` goes out through `scripts/publish.sh`, and every version after

@@ -6,11 +6,19 @@ name: Publish
 #
 # This only works once a trusted publisher is configured for the package on
 # npmjs.com (Settings -> Trusted Publisher), naming:
-#   organization  ephillipe
-#   repository    opencode-claude-mem
-#   workflow      publish.yml
-# npm does not validate that configuration when it is saved, so a typo here
-# shows up as ENEEDAUTH at publish time and nowhere earlier.
+#   organization     ephillipe
+#   repository       opencode-claude-mem
+#   workflow         publish.yml
+#   allowed actions  npm publish   <- load-bearing, see below
+#
+# "Allowed actions" is not optional in practice. Trusted publishers created
+# after 2026-09-03 default to permitting only `npm stage publish`, which parks
+# a release for human 2FA approval rather than shipping it. The Publish step
+# below runs `npm publish`, so the publisher must also be granted direct
+# publishing, or every release fails.
+#
+# npm does not validate any of this when it is saved, so a typo here shows up
+# as ENEEDAUTH at publish time and nowhere earlier.
 #
 # It cannot bootstrap the first release. npm only exposes Trusted Publisher
 # settings on a package that already exists, so 0.1.0 has to be published once
