@@ -24,13 +24,28 @@ const rows = () =>
     .filter(Boolean)
     .map((l) => JSON.parse(l) as Record<string, unknown>)
 
-/** A ctx that satisfies the V2 contract, with only the domains setup() touches. */
-function fakeCtx(options: unknown, sessionID = "ses_debug_e2e") {
+/**
+ * A ctx that satisfies the V2 contract, with only the domains setup() touches.
+ *
+ * `worker` is threaded in from the fake worker deliberately. Without it these tests
+ * resolve the default port 37777, which passes on a developer machine that happens
+ * to have a real claude-mem worker running and fails in CI, where nothing is there.
+ * That is not a hypothetical: it is exactly how the first version of this file was
+ * caught. A test that depends on ambient state is a test that lies on the machine
+ * you wrote it on.
+ */
+function fakeCtx(
+  options: unknown,
+  sessionID = "ses_debug_e2e",
+  worker?: { port: number },
+) {
   const sessionHooks = new Map<string, (e: unknown) => unknown>()
   const toolHooks = new Map<string, (e: unknown) => unknown>()
   const events: unknown[] = []
   return {
-    options,
+    options: worker
+      ? { ...(options as Record<string, unknown>), worker: { host: "127.0.0.1", port: worker.port, timeoutMs: 2000 } }
+      : options,
     location: { directory: dir, project: { canonical: dir } },
     session: { hook: async (n: string, fn: (e: unknown) => unknown) => sessionHooks.set(n, fn) },
     tool: {
@@ -54,7 +69,7 @@ function fakeCtx(options: unknown, sessionID = "ses_debug_e2e") {
 describe("debug logging, end to end", () => {
   test("a real setup() records which build and which file loaded", async () => {
     const fw = await startFakeWorker()
-    const ctx = fakeCtx({ debug: { enabled: true, logPath } })
+    const ctx = fakeCtx({ debug: { enabled: true, logPath } }, "ses_debug_e2e", fw)
     const dispose = await setup(ctx)
     try {
       // The two facts that were unobtainable for a full day of debugging: the
@@ -72,7 +87,7 @@ describe("debug logging, end to end", () => {
 
   test("capture is silent at every gate while debug is off, and says which one when on", async () => {
     const fw = await startFakeWorker()
-    const offCtx = fakeCtx({ debug: { enabled: false, logPath: join(dir, "off.log") } })
+    const offCtx = fakeCtx({ debug: { enabled: false, logPath: join(dir, "off.log") } }, "ses_debug_e2e", fw)
     const offDispose = await setup(offCtx)
 
     const allowlisted = { tool: "read", sessionID: offCtx._sessionID, result: { output: "hello" } }
@@ -87,7 +102,7 @@ describe("debug logging, end to end", () => {
     expect(existsSync(join(dir, "off.log"))).toBe(false)
 
     const mark = existsSync(logPath) ? rows().length : 0
-    const onCtx = fakeCtx({ debug: { enabled: true, logPath } })
+    const onCtx = fakeCtx({ debug: { enabled: true, logPath } }, "ses_debug_e2e", fw)
     const onDispose = await setup(onCtx)
     onCtx._hooks.tool.get("execute.after")!(allowlisted)
     onCtx._hooks.tool.get("execute.after")!(notAllowlisted)
@@ -139,7 +154,7 @@ describe("debug logging, end to end", () => {
   test("worker responses are logged with status and timing", async () => {
     const fw = await startFakeWorker()
     const before = rows().length
-    const ctx = fakeCtx({ debug: { enabled: true, logPath } })
+    const ctx = fakeCtx({ debug: { enabled: true, logPath } }, "ses_debug_e2e", fw)
     const dispose = await setup(ctx)
     try {
       const fresh = rows().slice(before)
