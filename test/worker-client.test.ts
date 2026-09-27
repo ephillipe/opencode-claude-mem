@@ -126,6 +126,72 @@ describe("read endpoints", () => {
   })
 })
 
+describe("last write attempt", () => {
+  // A stalled write is invisible from the counters alone: `accepted: 2` from early
+  // in the session looks identical whether the last five writes landed or died.
+  const obs = { contentSessionId: "s1", toolName: "read", toolInput: {}, toolResponse: "x", cwd: "/p" }
+
+  it("records the endpoint and outcome of the most recent write", async () => {
+    const fw = await startFakeWorker()
+    try {
+      const c = new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 })
+      await c.postObservation(obs)
+      expect(c.lastWrite).toMatchObject({
+        path: "/api/sessions/observations",
+        outcome: "accepted",
+      })
+      expect(new Date(c.lastWrite!.at).toISOString()).toBe(c.lastWrite!.at)
+    } finally {
+      await fw.close()
+    }
+  })
+
+  it("records a failed write, so a stale success is not left on screen", async () => {
+    // The dangerous version of this feature is one that only updates on success:
+    // the last good write would then keep reporting while every later write died.
+    const fw = await startFakeWorker()
+    try {
+      fw.setWriteBroken("queue is down")
+      const c = new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 })
+      expect(await c.postObservation(obs)).toBe(false)
+      expect(c.lastWrite).toMatchObject({
+        path: "/api/sessions/observations",
+        outcome: "failed",
+      })
+    } finally {
+      await fw.close()
+    }
+  })
+
+  it("keeps reads out of it, because a read stored nothing", async () => {
+    // Same discipline as the `accepted` counter: /mem itself reads, so folding
+    // reads in here would make the last "write" be a health probe.
+    const fw = await startFakeWorker()
+    try {
+      const c = new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 })
+      await c.health()
+      await c.recentContext("p", 5)
+      expect(c.lastWrite).toBeNull()
+    } finally {
+      await fw.close()
+    }
+  })
+
+  it("does not let a later read mask the write that actually failed", async () => {
+    const fw = await startFakeWorker()
+    try {
+      fw.setWriteBroken("queue is down")
+      const c = new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 })
+      await c.postObservation(obs)
+      await c.health()
+      await c.recentContext("p", 5)
+      expect(c.lastWrite?.outcome).toBe("failed")
+    } finally {
+      await fw.close()
+    }
+  })
+})
+
 describe("failure policy", () => {
   it("counts an accepted capture when a write succeeds", async () => {
     const before = client.counters.accepted

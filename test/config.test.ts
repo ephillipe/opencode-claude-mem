@@ -26,6 +26,66 @@ describe("defaults", () => {
   })
 })
 
+describe("provenance", () => {
+  // The question this exists to answer is "is my settings.json being read?", which a
+  // resolved value cannot answer: a default and an explicit setting are the same
+  // number. Each test pins which source is reported as the winner.
+  it("reports nothing when every value is a default", () => {
+    const c = resolveConfig({}, {}, noFile, 0)
+    expect(c.provenance).toEqual({})
+  })
+
+  it("names settings.json when that is where the value came from", () => {
+    const c = resolveConfig(
+      {},
+      {},
+      settings({ CLAUDE_MEM_WORKER_PORT: "40000" }),
+      0,
+    )
+    expect(c.provenance["worker.port"]).toBe("settings.json")
+  })
+
+  it("blames env when env wins over settings.json", () => {
+    const c = resolveConfig(
+      {},
+      { CLAUDE_MEM_WORKER_PORT: "41000" },
+      settings({ CLAUDE_MEM_WORKER_PORT: "40000" }),
+      0,
+    )
+    expect(c.worker.port).toBe(41000)
+    expect(c.provenance["worker.port"]).toBe("env")
+  })
+
+  it("blames the opencode config when options win over both", () => {
+    const c = resolveConfig(
+      { worker: { port: 42000 } },
+      { CLAUDE_MEM_WORKER_PORT: "41000" },
+      settings({ CLAUDE_MEM_WORKER_PORT: "40000" }),
+      0,
+    )
+    expect(c.worker.port).toBe(42000)
+    expect(c.provenance["worker.port"]).toBe("opencode config")
+  })
+
+  it("does not blame a source for a value it did not supply", () => {
+    // Reporting the loser would imply the value is in effect from two places at once.
+    const c = resolveConfig({}, { CLAUDE_MEM_WORKER_HOST: "10.0.0.1" }, noFile, 0)
+    expect(c.provenance["worker.port"]).toBeUndefined()
+  })
+
+  it("does not mark the 37700+uid fallback as an override", () => {
+    const c = resolveConfig({}, {}, noFile, 7)
+    expect(c.worker.port).toBe(37707)
+    expect(c.provenance["worker.port"]).toBeUndefined()
+  })
+
+  it("records option-only keys under the section they belong to", () => {
+    const c = resolveConfig({ capture: { flushDebounceMs: 10 }, inject: { enabled: false } }, {}, noFile, 0)
+    expect(c.provenance["capture.flushDebounceMs"]).toBe("opencode config")
+    expect(c.provenance["inject.enabled"]).toBe("opencode config")
+  })
+})
+
 describe("port resolution", () => {
   it("prefers the environment variable over settings.json", () => {
     const c = resolveConfig({}, { CLAUDE_MEM_WORKER_PORT: "40000" }, settings({ CLAUDE_MEM_WORKER_PORT: "37777" }), 502)

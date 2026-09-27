@@ -8,6 +8,15 @@
  */
 export type Counters = { accepted: number; dropped: number; failures: number }
 
+/** `accepted` means the worker took the write, not that anything was persisted. */
+export type WriteOutcome = "accepted" | "failed"
+
+export type WriteAttempt = {
+  path: string
+  outcome: WriteOutcome
+  at: string
+}
+
 export type ClientOptions = { host: string; port: number; timeoutMs: number }
 
 /**
@@ -45,6 +54,13 @@ function readText(payload: unknown): string {
 export class WorkerClient {
   readonly baseUrl: string
   readonly counters: Counters = { accepted: 0, dropped: 0, failures: 0 }
+  /**
+   * The most recent write only. Counters cannot distinguish a session that wrote
+   * twice early and then went silent from one that is still working, and reads are
+   * excluded for the same reason the `accepted` counter excludes them: /mem reads,
+   * so a read landing here would report itself as the last thing stored.
+   */
+  lastWrite: WriteAttempt | null = null
 
   constructor(private readonly opts: ClientOptions) {
     this.baseUrl = `http://${opts.host}:${opts.port}`
@@ -100,6 +116,25 @@ export class WorkerClient {
     this.counters.accepted++
   }
 
+  /**
+   * The single entry point for every write, so lastWrite cannot miss a path the way
+   * a per-method call site eventually would. Records on failure as well as success:
+   * updating only on success would leave the last good write on screen forever.
+   */
+  private async write(
+    path: string,
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<{ ok: boolean; status: number; data: unknown }> {
+    const r = await this.request(path, { method: "POST", body, signal })
+    this.lastWrite = {
+      path,
+      outcome: r.ok ? "accepted" : "failed",
+      at: new Date().toISOString(),
+    }
+    return r
+  }
+
   async health(signal?: AbortSignal): Promise<boolean> {
     const r = await this.request("/api/health", { method: "GET", timeoutMs: 2000, signal })
     if (!r.ok) {
@@ -113,11 +148,11 @@ export class WorkerClient {
     a: { contentSessionId: string; project: string; prompt: string },
     signal?: AbortSignal,
   ): Promise<{ sessionDbId?: number; promptNumber?: number; skipped: boolean } | null> {
-    const r = await this.request("/api/sessions/init", {
-      method: "POST",
+    const r = await this.write(
+      "/api/sessions/init",
+      { ...this.sessionFields(a.contentSessionId), project: a.project, prompt: a.prompt },
       signal,
-      body: { ...this.sessionFields(a.contentSessionId), project: a.project, prompt: a.prompt },
-    })
+    )
     if (!r.ok) return this.fail()
     this.recordAccepted()
     const d = (r.data ?? {}) as Wire
@@ -138,17 +173,17 @@ export class WorkerClient {
     },
     signal?: AbortSignal,
   ): Promise<boolean> {
-    const r = await this.request("/api/sessions/observations", {
-      method: "POST",
-      signal,
-      body: {
+    const r = await this.write(
+      "/api/sessions/observations",
+      {
         ...this.sessionFields(a.contentSessionId),
         tool_name: a.toolName,
         tool_input: a.toolInput,
         tool_response: a.toolResponse,
         cwd: a.cwd,
       },
-    })
+      signal,
+    )
     if (!r.ok) {
       this.fail()
       return false
@@ -161,15 +196,11 @@ export class WorkerClient {
     a: { contentSessionId: string; lastUserMessage: string; lastAssistantMessage: string },
     signal?: AbortSignal,
   ): Promise<boolean> {
-    const r = await this.request("/api/sessions/summarize", {
-      method: "POST",
-      signal,
-      body: {
+    const r = await this.write("/api/sessions/summarize", {
         ...this.sessionFields(a.contentSessionId),
         last_user_message: a.lastUserMessage,
         last_assistant_message: a.lastAssistantMessage,
-      },
-    })
+      }, signal)
     if (!r.ok) {
       this.fail()
       return false
@@ -179,11 +210,11 @@ export class WorkerClient {
   }
 
   async completeSession(a: { contentSessionId: string }, signal?: AbortSignal): Promise<boolean> {
-    const r = await this.request("/api/sessions/complete", {
-      method: "POST",
+    const r = await this.write(
+      "/api/sessions/complete",
+      this.sessionFields(a.contentSessionId),
       signal,
-      body: this.sessionFields(a.contentSessionId),
-    })
+    )
     if (!r.ok) {
       this.fail()
       return false

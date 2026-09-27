@@ -1,6 +1,6 @@
 {
   "name": "@ephillipe/opencode-claude-mem",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "OpenCode V2 plugin for claude-mem persistent memory: turn capture, once-per-session context injection, and recall search",
   "type": "module",
   "exports": {

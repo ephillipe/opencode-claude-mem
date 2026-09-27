@@ -444,6 +444,146 @@ describe("commands", () => {
     expect(h.prompts[0].text).toContain("verify:live --session")
   })
 
+  it("/mem names the build and the worker endpoint it resolved", async () => {
+    // A counter label is a version fingerprint: this session read `posted: 51`
+    // from a build three releases old, and nothing on screen said so. The endpoint
+    // matters for the same reason — a wrong port is the usual reason a worker
+    // "isn't working", and it is invisible unless it is printed.
+    const h = await boot()
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "s1", prompt: { text: "" }, delivery: "steer",
+    })
+    const text = h.prompts[0].text
+    // Read from package.json, not a hardcoded literal that drifts on every bump.
+    const { version } = await import("../package.json")
+    expect(text).toContain(`build: ${version}`)
+    expect(text).toContain(`http://127.0.0.1:${h.worker.port}`)
+  })
+
+  it("/mem scores each memory path and says why when one fails", async () => {
+    // Health on its own only proves the worker answers /api/health. What the reader
+    // needs to know is which of the four memory paths work, and a bare "healthy"
+    // cannot distinguish a worker that stores from one that only replies.
+    const h = await boot()
+    h.worker.setSearchBroken("Chroma connection failed")
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "s1", prompt: { text: "" }, delivery: "steer",
+    })
+    const text = h.prompts[0].text
+    expect(text).toMatch(/injection/)
+    expect(text).toMatch(/search/)
+    // The backend's own reason, not a generic failure: "Chroma" is the actionable word.
+    expect(text).toContain("Chroma connection failed")
+  })
+
+  it("/mem cannot claim auto memory works, and points at the harness that can", async () => {
+    // Verified against worker 10.1.0: /api/summaries ignores contentSessionId and
+    // returns every session's summaries unfiltered. So there is no honest way to
+    // score auto-memory from inside a session, and saying "working" here would be
+    // the exact overclaim this plugin exists to avoid.
+    const h = await boot()
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "s1", prompt: { text: "" }, delivery: "steer",
+    })
+    const text = h.prompts[0].text
+    expect(text).toMatch(/auto memory[^\n]*UNKNOWN/)
+    expect(text).toContain("verify:live --session s1")
+  })
+
+  it("/mem says where each overridden setting came from", async () => {
+    // "my settings.json is being ignored" is the usual reason a worker looks
+    // misconfigured, and it is invisible from values alone: a default and an
+    // explicit setting print the same. Names the source, or it cannot be told apart.
+    // The fake worker's port is itself an override of the 37702 default, so the
+    // default path is exercised without inventing an option.
+    const h = await boot()
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "s1", prompt: { text: "" }, delivery: "steer",
+    })
+    const text = h.prompts[0].text
+    expect(text).toMatch(/config:/)
+    expect(text).toContain("worker.port")
+    // Only what was actually overridden; a full dump would bury the one line that
+    // matters and would still not say which values won.
+    expect(text).not.toContain("inject.enabled")
+  })
+
+  it("/mem warns when this session is debug traffic, not a working session", async () => {
+    // This is the exact shape that misled the reader: a probe session's summary
+    // rendered under "# Recent" next to healthy counters, reading as "it works".
+    const h = await boot()
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "ses_PROBE_1790489580", prompt: { text: "" }, delivery: "steer",
+    })
+    const text = h.prompts[0].text
+    expect(text).toMatch(/probe/i)
+    // It has to say the rows prove nothing, not merely that the id looks odd.
+    expect(text).toMatch(/not evidence/i)
+  })
+
+  it("/mem warns on every probe id the shared rule matches", async () => {
+    // Case by case, because the rule is shared with verify-live and a gap here
+    // means the two surfaces disagree about which sessions are real. The
+    // always-true case is `isProbeSession(id) === false` — that mutation passes a
+    // `not.toMatch` test while never warning on a genuine probe, which is exactly
+    // how a guard ends up decorative.
+    for (const id of ["ses_PROBE_1790489580", "ses_P2_A_1790489751", "ses_VERIFY_x"]) {
+      const h = await boot()
+      await h.commands.find((c) => c.name === "mem")!.execute({
+        sessionID: id, prompt: { text: "" }, delivery: "steer",
+      })
+      expect(h.prompts[0].text, `${id} should be flagged`).toMatch(
+        /looks like a debug\/probe session/,
+      )
+    }
+  })
+
+  it("/mem says nothing about probes on an ordinary session", async () => {
+    // A warning that fires on real sessions trains the reader to ignore it. Scoped
+    // to the probe warning itself: the note about the Recent block is always true
+    // and is not a warning about this session.
+    const h = await boot()
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "ses_01ABCDEF", prompt: { text: "" }, delivery: "steer",
+    })
+    expect(h.prompts[0].text).not.toMatch(/looks like a debug\/probe session/)
+  })
+
+  it("/mem labels the recent block as other sessions, not this one", async () => {
+    // The block below is assembled by the worker from the last N sessions of the
+    // project, so it can contain a probe, or a different project entirely.
+    const h = await boot()
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "ses_01ABCDEF", prompt: { text: "" }, delivery: "steer",
+    })
+    expect(h.prompts[0].text).toMatch(/other sessions/i)
+  })
+
+  it("/mem reports the last write, or says there has not been one", async () => {
+    // `accepted: 2` from ten minutes ago looks identical whether the session is
+    // still storing or has gone quiet, so the counters alone cannot answer that.
+    // Debounce is shortened rather than slept through, so the test is not slow and
+    // does not depend on the shipped default staying under some ceiling.
+    const h = await boot({ capture: { flushDebounceMs: 10 } })
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "s1", prompt: { text: "" }, delivery: "steer",
+    })
+    expect(h.prompts[0].text).toMatch(/last write: none/)
+
+    h.worker.setWriteBroken("queue is down")
+    await h.fire("tool.execute.after", {
+      sessionID: "s1", tool: "read", callID: "c1",
+      args: { path: "/a" }, output: "x", time: { start: 1, end: 2 },
+    })
+    await new Promise((r) => setTimeout(r, 200))
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "s1", prompt: { text: "" }, delivery: "steer",
+    })
+    const text = h.prompts[h.prompts.length - 1].text
+    expect(text).toContain("last write: failed")
+    expect(text).toContain("/api/sessions/observations")
+  })
+
   it("/memory reports a dead backend instead of an empty result", async () => {
     const h = await boot()
     await h.commands.find((c) => c.name === "memory")!.execute({

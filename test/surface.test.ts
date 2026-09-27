@@ -1,3 +1,4 @@
+import type { Counters } from "../src/worker-client"
 import { describe, expect, it } from "bun:test"
 import { startFakeWorker, type FakeWorker } from "./helpers/fake-worker"
 import { WorkerClient } from "../src/worker-client"
@@ -35,8 +36,14 @@ describe("parseQuery", () => {
 })
 
 describe("formatStatus", () => {
+  // The header params are required rather than optional so a future caller cannot
+  // silently drop the build version and endpoint — the omission that let a session
+  // run three releases behind with nothing on screen to say so.
+  const status = (counters: Counters, healthy: boolean | null, project = "p") =>
+    formatStatus(project, counters, healthy, "http://127.0.0.1:37777", "9.9.9", null)
+
   it("reports the project, health and counters", () => {
-    const s = formatStatus("proj", { accepted: 3, dropped: 1, failures: 0 }, true)
+    const s = status({ accepted: 3, dropped: 1, failures: 0 }, true, "proj")
     expect(s).toContain("proj")
     expect(s).toContain("accepted: 3")
     expect(s).toContain("dropped: 1")
@@ -46,17 +53,27 @@ describe("formatStatus", () => {
   // The worker accepts an observation into its queue and persists it much later,
   // if at all. "posted" read as "saved"; only acceptance is observable from here.
   it("does not claim a durability it cannot verify", () => {
-    const s = formatStatus("p", { accepted: 4, dropped: 0, failures: 0 }, true)
-    expect(s).not.toContain("posted")
+    expect(status({ accepted: 4, dropped: 0, failures: 0 }, true)).not.toContain("posted")
   })
 
   it("says so when the worker is unreachable", () => {
-    const s = formatStatus("p", { accepted: 0, dropped: 0, failures: 2 }, false)
-    expect(s).toContain("unreachable")
+    expect(status({ accepted: 0, dropped: 0, failures: 2 }, false)).toContain("unreachable")
   })
 
   it("distinguishes unknown health from unhealthy", () => {
-    expect(formatStatus("p", { accepted: 0, dropped: 0, failures: 0 }, null)).toContain("unknown")
+    expect(status({ accepted: 0, dropped: 0, failures: 0 }, null)).toContain("unknown")
+  })
+
+  it("names the build and the endpoint, so a stale install is visible", () => {
+    const s = status({ accepted: 0, dropped: 0, failures: 0 }, true)
+    expect(s).toContain("build: 9.9.9")
+    expect(s).toContain("http://127.0.0.1:37777")
+  })
+
+  it("still names the endpoint when the worker is unreachable", () => {
+    // A dead worker is exactly when the endpoint matters most: a wrong port looks
+    // identical to a stopped worker unless the address is on screen.
+    expect(status({ accepted: 0, dropped: 0, failures: 0 }, false)).toContain("37777")
   })
 })
 
@@ -214,6 +231,7 @@ describe("statusCommandDef", () => {
         client: new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 }),
         project: "proj",
         counters: () => ({ accepted: 7, dropped: 2, failures: 1 }),
+        provenance: () => ({}),
         health: async () => true,
         reply: async (body) => {
           sent.push(body)
@@ -236,6 +254,7 @@ describe("statusCommandDef", () => {
         client: new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 }),
         project: "proj",
         counters: () => ({ accepted: 0, dropped: 0, failures: 3 }),
+        provenance: () => ({}),
         health: async () => false,
         reply: async (body) => {
           sent.push(body)

@@ -230,7 +230,16 @@ export async function setup(ctx: any): Promise<() => void> {
       })
     }
     editor.add(memoryCommandDef({ client, project, reply }))
-    editor.add(statusCommandDef({ client, project, counters, health, reply }))
+    editor.add(
+      statusCommandDef({
+        client,
+        project,
+        counters,
+        provenance: () => cfg.provenance,
+        health,
+        reply,
+      }),
+    )
   })
 
   return () => {

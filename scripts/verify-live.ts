@@ -38,7 +38,10 @@ const BASE = `http://127.0.0.1:${PORT}`
 const DB_PATH = process.env.CLAUDE_MEM_DB ?? join(homedir(), ".claude-mem", "claude-mem.db")
 
 /** A row the plugin caused is one the worker stored for a real OpenCode session. */
-const PROBE = /^ses_(PROBE|P2_|VERIFY)/
+// Shared with /mem rather than duplicated: when these were separate, a probe run
+// passed here while looking healthy in-session, which is how broken automation
+// came to be read as working.
+const { isProbeSession: PROBE } = await import("../src/probe-session")
 
 type Verdict = "PASS" | "FAIL" | "UNKNOWN"
 type Check = {
@@ -206,7 +209,7 @@ if (!SESSION) {
       "No --session given. This check needs a real session that has taken a turn, because\n" +
       "         session.idle is emitted by the model, not by a script.",
   })
-} else if (PROBE.test(SESSION)) {
+} else if (PROBE(SESSION)) {
   record({
     path: "auto memory (idle → summarize)",
     verdict: "FAIL",

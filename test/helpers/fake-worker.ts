@@ -5,6 +5,7 @@ export type FakeWorker = {
   port: number
   calls: { path: string; query: URLSearchParams; body: any }[]
   setSearchBroken(reason: string | null): void
+  setWriteBroken(reason: string | null): void
   close(): Promise<void>
 }
 
@@ -19,6 +20,7 @@ const CHROMA_ERROR = "Chroma connection failed: Chroma server not reachable."
 export async function startFakeWorker(): Promise<FakeWorker> {
   const calls: FakeWorker["calls"] = []
   let searchBroken: string | null = CHROMA_ERROR
+  let writeBroken: string | null = null
 
   const server: Server = createServer((req, res) => {
     let raw = ""
@@ -43,12 +45,16 @@ export async function startFakeWorker(): Promise<FakeWorker> {
 
       switch (path) {
         case "/api/sessions/init":
+          if (writeBroken) return send(500, { error: writeBroken })
           return send(200, { sessionDbId: 1, promptNumber: 1, skipped: false })
         case "/api/sessions/observations":
+          if (writeBroken) return send(500, { error: writeBroken })
           return send(200, { status: "queued" })
         case "/api/sessions/summarize":
+          if (writeBroken) return send(500, { error: writeBroken })
           return send(200, { status: "queued" })
         case "/api/sessions/complete":
+          if (writeBroken) return send(500, { error: writeBroken })
           return send(200, { status: "completed", sessionDbId: 1 })
         case "/api/health":
           return send(200, { status: "ok", version: "10.1.0" })
@@ -84,6 +90,9 @@ export async function startFakeWorker(): Promise<FakeWorker> {
     calls,
     setSearchBroken(reason) {
       searchBroken = reason
+    },
+    setWriteBroken(reason) {
+      writeBroken = reason
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   }

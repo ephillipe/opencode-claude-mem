@@ -1,4 +1,6 @@
-import type { Counters, WorkerClient } from "./worker-client"
+import type { Counters, WorkerClient, WriteAttempt } from "./worker-client"
+import { BUILD_VERSION } from "./build-info"
+import { isProbeSession } from "./probe-session"
 
 export const NAMESPACE = "claude_mem"
 
@@ -60,12 +62,19 @@ export function formatStatus(
   project: string,
   counters: Counters,
   healthy: boolean | null,
+  endpoint: string,
+  build: string,
+  lastWrite: WriteAttempt | null,
 ): string {
   const state = healthy === null ? "unknown" : healthy ? "healthy" : "unreachable"
   return [
     `claude-mem — project: ${project}`,
-    `worker: ${state}`,
+    `build: ${build}`,
+    `worker: ${state}  ${endpoint}`,
     `accepted: ${counters.accepted}  dropped: ${counters.dropped}  failures: ${counters.failures}`,
+    lastWrite === null
+      ? "last write: none this session"
+      : `last write: ${lastWrite.outcome}  ${lastWrite.path}  ${lastWrite.at}`,
   ].join("\n")
 }
 
@@ -130,6 +139,7 @@ export function statusCommandDef(args: {
   client: WorkerClient
   project: string
   counters: () => Counters
+  provenance: () => Record<string, string>
   health: () => Promise<boolean>
   reply: Reply
 }): CommandDef {
@@ -138,15 +148,72 @@ export function statusCommandDef(args: {
     description: "claude-mem status: worker health, counters, recent context",
     execute: async (invocation) => {
       const healthy = await args.health()
-      const lines = [formatStatus(args.project, args.counters(), healthy)]
+      const lines = [
+        formatStatus(
+          args.project,
+          args.counters(),
+          healthy,
+          args.client.baseUrl,
+          BUILD_VERSION,
+          args.client.lastWrite,
+        ),
+      ]
       // The live check scores auto-memory per session, and the session id is not
       // printed anywhere else — not in the TUI, not in the worker. Without this
       // line the documented `verify:live --session <id>` step cannot be followed.
       // The counters above describe this session; say which one it is.
       const id = invocation.sessionID
       lines.push(`session: ${id}`, `check this session end to end: bun run verify:live --session ${id}`)
+
+      const overrides = Object.entries(args.provenance())
+      lines.push(
+        overrides.length === 0
+          ? "config: all defaults"
+          : `config: ${overrides.map(([k, v]) => `${k} from ${v}`).join("; ")}`,
+      )
+
+      if (isProbeSession(id)) {
+        lines.push(
+          "",
+          `⚠ ${id} looks like a debug/probe session.`,
+          "  Its rows are not evidence that the plugin works: a hand-written request",
+          "  to the worker produces exactly the same rows, which is how a dead",
+          "  auto-memory path reads as healthy. Use verify:live on a real session.",
+        )
+      }
+
+      // Health only proves the worker answers /api/health. What matters is which
+      // memory paths work, so each is exercised for real and reports its own
+      // verdict. Reads only — none of these store anything or touch the counters.
+      const [injected, searched] = await Promise.all([
+        args.client.contextInject([args.project]),
+        args.client.searchObservations("claude-mem self check", args.project, 1),
+      ])
+      lines.push(
+        "",
+        "paths:",
+        `  injection  ${injected === null ? "FAIL  worker returned no context" : `PASS  ${injected.trim().length} chars`}`,
+        `  search     ${searched.ok ? "PASS  backend answered" : `FAIL  ${searched.reason}`}`,
+        // Not checkable from in here, and saying so is the honest answer. See the
+        // note in verify-live: /api/summaries ignores a session filter in 10.1.0.
+        `  auto memory  UNKNOWN  not checkable from inside a session — the worker's`,
+        "                summaries endpoint ignores a session filter. Run:",
+        `                bun run verify:live --session ${invocation.sessionID}`,
+      )
+
       const recent = await args.client.recentContext(args.project, 5)
-      if (recent) lines.push("", recent)
+      if (recent) {
+        // This block is the worker's last N sessions for the project, so it is
+        // never about the session above unless it happens to be the newest one.
+        // The worker's own heading is stripped so the two do not stack up.
+        lines.push(
+          "",
+          "# Recent — other sessions in this project, assembled by the worker.",
+          "  Not evidence about the session above, and not filtered to it.",
+          "",
+          recent.replace(/^#+ Recent[^\n]*\n?/, "").trim(),
+        )
+      }
       await args.reply(lines.join("\n"), invocation)
     },
   }

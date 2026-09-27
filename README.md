@@ -349,6 +349,36 @@ only way to get it. That check only reports anything about a plugin version load
 startup, so a session that began before an upgrade is scoring the *old* build: the counters
 will look healthy and auto-memory will still fail.
 
+`/mem` answers the same question from inside the session, and names the build, the endpoint it
+resolved, the last write, and where each overridden setting came from:
+
+```
+claude-mem — project: opencode-claude-mem
+build: 0.1.4
+worker: healthy  http://127.0.0.1:37777
+accepted: 3  dropped: 0  failures: 0
+last write: accepted  /api/sessions/observations  2026-09-27T08:14:02.113Z
+session: ses_01HXYZ
+check this session end to end: bun run verify:live --session ses_01HXYZ
+config: worker.host from settings.json; worker.port from opencode config
+
+paths:
+  injection  PASS  5304 chars
+  search     FAIL  Chroma connection failed: Chroma server not reachable.
+  auto memory  UNKNOWN  not checkable from inside a session — the worker's
+                summaries endpoint ignores a session filter. Run:
+                bun run verify:live --session ses_01HXYZ
+```
+
+`build:` exists because the counter label is a version fingerprint. A session reading `posted:`
+is at least two releases behind, and nothing else on screen would have said so.
+
+`auto memory` is **UNKNOWN** in `/mem` by design, not by omission. Worker 10.1.0's
+`/api/summaries` ignores `contentSessionId` and returns every session's summaries unfiltered, so
+there is no in-session check that can attribute a summary to this session. The harness reads the
+store directly and can. Claiming otherwise from inside a session is the overclaim this plugin
+exists to avoid, so it reports the limit and the command that clears it.
+
 It is read-only, and it exits non-zero if any path fails, so it can gate a manual check.
 Each path reports `PASS`, `FAIL`, or `UNKNOWN`:
 
@@ -369,7 +399,9 @@ Two guards keep the output honest:
 - Debug traffic is not credited. Passing a `ses_PROBE_*` id is refused outright, and if
   probe sessions exist in the store the run prints a warning. A `curl` written by hand
   produces exactly the rows that a working plugin produces, which is how broken automation
-  has previously looked healthy.
+  has previously looked healthy. The rule lives in `src/probe-session.ts` and is shared with
+  `/mem`, because when the two surfaces had separate copies they disagreed — the probe passed
+  the harness while looking healthy in-session.
 - The bug signature is named. A session with observations but no summary reports
   "the idle event is not resolving the session id" and points at `sessionIdOf()`.
 

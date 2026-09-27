@@ -17,6 +17,13 @@ export type ResolvedConfig = {
   inject: { enabled: boolean; maxChars: number }
   worker: { host: string; port: number; timeoutMs: number }
   project: { name: string | null }
+  /**
+   * Which keys were set explicitly, and where they came from, keyed `section.field`.
+   * A value alone cannot answer "is my settings.json being read?" — a default and an
+   * explicit setting resolve to the same number, which is why a misconfigured worker
+   * is indistinguishable from a correct one until someone reads the config.
+   */
+  provenance: Record<string, string>
 }
 
 export const DEFAULT_TOOLS = [
@@ -46,6 +53,7 @@ export function defaultConfig(): ResolvedConfig {
       flushDebounceMs: 5000,
     },
     inject: { enabled: true, maxChars: 8000 },
+    provenance: {},
     worker: { host: "127.0.0.1", port: 37702, timeoutMs: 5000 },
     project: { name: null },
   }
@@ -83,6 +91,19 @@ export function resolveConfig(
   uid: number,
 ): ResolvedConfig {
   const cfg = defaultConfig()
+  // Recorded alongside the assignments rather than by re-deriving them afterwards, so
+  // a value and its source can never disagree. Marking is guarded on "was this
+  // actually provided", so a default is never reported as an override.
+  const from = (key: string, source: string, provided: boolean): void => {
+    if (provided) cfg.provenance[key] = source
+  }
+  const asString = (v: unknown): string | undefined =>
+    typeof v === "string" && v !== "" ? v : undefined
+  const asNumber = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) ? v : undefined
+  const OPTIONS = "opencode config"
+  const ENV = "env"
+  const SETTINGS = "settings.json"
 
   const rawOptions = options && typeof options === "object" && !Array.isArray(options) ? (options as Wire) : {}
   const rawSettings = readFile(`${process.env.HOME ?? "~"}/.claude-mem/settings.json`)
@@ -95,15 +116,23 @@ export function resolveConfig(
 
   if (Array.isArray(capture.tools)) {
     cfg.capture.tools = capture.tools.filter((t): t is string => typeof t === "string")
+    from("capture.tools", OPTIONS, true)
   }
   cfg.capture.assistantText = bool(capture.assistantText, cfg.capture.assistantText)
+  from("capture.assistantText", OPTIONS, typeof capture.assistantText === "boolean")
   cfg.capture.minAssistantChars = num(capture.minAssistantChars, cfg.capture.minAssistantChars)
+  from("capture.minAssistantChars", OPTIONS, asNumber(capture.minAssistantChars) !== undefined)
   cfg.capture.maxBufferEntries = num(capture.maxBufferEntries, cfg.capture.maxBufferEntries)
+  from("capture.maxBufferEntries", OPTIONS, asNumber(capture.maxBufferEntries) !== undefined)
   cfg.capture.maxBufferChars = num(capture.maxBufferChars, cfg.capture.maxBufferChars)
+  from("capture.maxBufferChars", OPTIONS, asNumber(capture.maxBufferChars) !== undefined)
   cfg.capture.flushDebounceMs = num(capture.flushDebounceMs, cfg.capture.flushDebounceMs)
+  from("capture.flushDebounceMs", OPTIONS, asNumber(capture.flushDebounceMs) !== undefined)
 
   cfg.inject.enabled = bool(inject.enabled, cfg.inject.enabled)
+  from("inject.enabled", OPTIONS, typeof inject.enabled === "boolean")
   cfg.inject.maxChars = num(inject.maxChars, cfg.inject.maxChars)
+  from("inject.maxChars", OPTIONS, asNumber(inject.maxChars) !== undefined)
 
   // CLAUDE_MEM_SKIP_TOOLS is deliberately not read. It lists Claude Code tool names
   // (TodoWrite, ListMcpResourcesTool, ...) that can never match OpenCode's, so
@@ -134,9 +163,32 @@ export function resolveConfig(
     timeoutMs: num(worker.timeoutMs, cfg.worker.timeoutMs),
   }
 
+  // Options beat env beats settings.json beats the 37700+uid default. Only the
+  // winner is recorded: listing the losers would imply they are in effect.
+  from("worker.host", OPTIONS, asString(worker.host) !== undefined)
+  if (cfg.provenance["worker.host"] === undefined) {
+    from("worker.host", ENV, asString(env.CLAUDE_MEM_WORKER_HOST) !== undefined)
+  }
+  if (cfg.provenance["worker.host"] === undefined) {
+    from("worker.host", SETTINGS, asString(settings.CLAUDE_MEM_WORKER_HOST) !== undefined)
+  }
+
+  from("worker.port", OPTIONS, asNumber(worker.port) !== undefined)
+  if (cfg.provenance["worker.port"] === undefined) {
+    from("worker.port", ENV, Number.isFinite(envPort))
+  }
+  if (cfg.provenance["worker.port"] === undefined) {
+    from("worker.port", SETTINGS, Number.isFinite(filePort))
+  }
+
+  cfg.worker.timeoutMs = num(worker.timeoutMs, cfg.worker.timeoutMs)
+  from("worker.timeoutMs", OPTIONS, asNumber(worker.timeoutMs) !== undefined)
+
   cfg.project.name =
     typeof project.name === "string" && project.name.length > 0 ? project.name : null
+  from("project.name", OPTIONS, cfg.project.name !== null)
   cfg.enabled = bool(rawOptions.enabled, cfg.enabled)
+  from("enabled", OPTIONS, typeof rawOptions.enabled === "boolean")
 
   return cfg
 }
