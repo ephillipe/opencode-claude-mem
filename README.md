@@ -37,17 +37,32 @@ The worker port is resolved in this order: `CLAUDE_MEM_WORKER_PORT`, then
 cd ~/.config/opencode && bun add @ephillipe/opencode-claude-mem
 ```
 
-Then add it to your existing `opencode.jsonc`. The key is `plugin`, singular, and each
-entry is either a bare package name or a `[name, options]` pair:
+Then add it to your existing `opencode.jsonc`. The key is `plugins`, and each entry is
+either a bare package name or an object carrying `package` and `options`:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@ephillipe/opencode-claude-mem"]
+  "plugins": ["@ephillipe/opencode-claude-mem"]
 }
 ```
 
-Check it took with `opencode debug config`, which lists the resolved sources. Note that
+**Options must use the object form.** The older `[name, options]` tuple is not accepted
+by V2 and fails silently — the plugin does not load, and nothing reports why. This is
+worth knowing because the failure is invisible: `opencode plugin list` simply omits the
+entry, so the plugin looks absent rather than misconfigured.
+
+```jsonc
+"plugins": [
+  { "package": "@ephillipe/opencode-claude-mem", "options": { "enabled": true } }
+]
+```
+
+Check it took with `opencode plugin list`, which shows the version actually loaded.
+That command is the one to trust: OpenCode serves npm plugins from its own cache, so
+the running build can differ from `package.json` without anything on screen saying so.
+
+`opencode debug config` also lists the resolved sources. Note that
 the resolved output spells the key `plugins`, plural, even though the key you write is
 `plugin` — so grep for the package name rather than trusting the key name:
 
@@ -72,24 +87,27 @@ creates a competing `opencode.json` and installs a plugin V2 does not read.
 
 ## Configuration
 
-Everything is optional. To pass options, use the `[name, options]` form:
+Everything is optional. To pass options, use the object form:
 
 ```jsonc
 {
-  "plugin": [["@ephillipe/opencode-claude-mem", {
-    "enabled": true,
-    "capture": {
-      "tools": ["read", "edit", "write", "patch", "apply_patch", "bash", "shell", "grep", "glob"],
-      "assistantText": true,
-      "minAssistantChars": 200,
-      "maxBufferEntries": 20,
-      "maxBufferChars": 4000,
-      "flushDebounceMs": 5000
-    },
-    "inject": { "enabled": true, "maxChars": 8000 },
-    "worker": { "host": null, "port": null, "timeoutMs": 5000 },
-    "project": { "name": null }
-  }]]
+  "plugins": [{
+    "package": "@ephillipe/opencode-claude-mem",
+    "options": {
+      "enabled": true,
+      "capture": {
+        "tools": ["read", "edit", "write", "patch", "apply_patch", "bash", "shell", "grep", "glob"],
+        "assistantText": true,
+        "minAssistantChars": 200,
+        "maxBufferEntries": 20,
+        "maxBufferChars": 4000,
+        "flushDebounceMs": 5000
+      },
+      "inject": { "enabled": true, "maxChars": 8000 },
+      "worker": { "host": null, "port": null, "timeoutMs": 5000 },
+      "project": { "name": null }
+    }
+  }]
 }
 ```
 
@@ -122,7 +140,10 @@ Turn it on from `opencode.jsonc`:
 
 ```jsonc
 "plugins": [
-  ["@ephillipe/opencode-claude-mem", { "debug": { "enabled": true, "logPath": "/tmp/claude-mem-debug.log" } }]
+  {
+    "package": "@ephillipe/opencode-claude-mem",
+    "options": { "debug": { "enabled": true, "logPath": "/tmp/claude-mem-debug.log" } }
+  }
 ]
 ```
 
