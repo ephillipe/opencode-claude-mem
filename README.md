@@ -79,7 +79,7 @@ session is the real confirmation.
 For local development, point at a clone instead:
 
 ```jsonc
-"plugin": ["file:///absolute/path/to/opencode-claude-mem"]
+"plugins": ["/absolute/path/to/opencode-claude-mem"]
 ```
 
 Do **not** use `npx claude-mem install --ide opencode`. That is the V1 installer; it
