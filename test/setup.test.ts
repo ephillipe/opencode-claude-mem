@@ -363,3 +363,30 @@ describe("commands", () => {
     expect(h.prompts[0].text).toContain("unavailable")
   })
 })
+
+describe("capture loss reporting", () => {
+  // Before the fix, /mem ran a health probe and a context read, both of which
+  // incremented the same counter as real capture writes — so `posted: 4` on a
+  // session with two posts meant four successful HTTP calls, not four memories.
+  it("counts only writes as accepted", async () => {
+    const h = await boot()
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "s1", prompt: { text: "" }, delivery: "steer",
+    })
+    expect(h.prompts[0].text).toContain("accepted: 0")
+  })
+
+  it("reports a nonzero dropped count when the buffer evicts entries", async () => {
+    const h = await boot({ capture: { maxBufferEntries: 1 } })
+    for (let i = 0; i < 3; i++) {
+      h.fire("tool.execute.after", {
+        sessionID: "s1", tool: "read", status: "completed",
+        input: { path: `f${i}.ts` }, result: { output: "x" },
+      })
+    }
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "s1", prompt: { text: "" }, delivery: "steer",
+    })
+    expect(h.prompts[0].text).toContain("dropped: 2")
+  })
+})

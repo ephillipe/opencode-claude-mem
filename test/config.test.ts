@@ -141,3 +141,16 @@ describe("project name", () => {
     expect(projectNameFor(undefined)).toBe("unknown-project")
   })
 })
+
+describe("capture allowlist", () => {
+  // The OpenCode harness names its primary tool `shell`, not `bash`. With only
+  // `bash` allowed, the default list captures none of the agent's own work while
+  // still looking configured.
+  it("captures shell, the harness's primary tool name", () => {
+    expect(defaultConfig().capture.tools).toContain("shell")
+  })
+
+  it("still captures bash, for harnesses that use that name", () => {
+    expect(defaultConfig().capture.tools).toContain("bash")
+  })
+})

@@ -127,12 +127,23 @@ describe("read endpoints", () => {
 })
 
 describe("failure policy", () => {
-  it("counts a success", async () => {
-    const before = client.counters.posted
+  it("counts an accepted capture when a write succeeds", async () => {
+    const before = client.counters.accepted
     await client.postObservation({
       contentSessionId: S, toolName: "t", toolInput: {}, toolResponse: "", cwd: "/tmp",
     })
-    expect(client.counters.posted).toBe(before + 1)
+    expect(client.counters.accepted).toBe(before + 1)
+  })
+
+  // Health probes and reads used to land in the same counter as capture writes, so
+  // `posted: 4` could mean two posts plus a health check and a context read.
+  it("counts reads without claiming a capture was stored", async () => {
+    const c = new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 })
+    await c.health()
+    await c.contextInject(["p"])
+    await c.recentContext("p", 1)
+    await c.searchByFile("x")
+    expect(c.counters.accepted).toBe(0)
   })
 
   it("counts a failure and returns false instead of throwing", async () => {

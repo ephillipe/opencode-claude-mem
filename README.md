@@ -79,7 +79,7 @@ Everything is optional. To pass options, use the `[name, options]` form:
   "plugin": [["@ephillipe/opencode-claude-mem", {
     "enabled": true,
     "capture": {
-      "tools": ["read", "edit", "write", "patch", "apply_patch", "bash", "grep", "glob"],
+      "tools": ["read", "edit", "write", "patch", "apply_patch", "bash", "shell", "grep", "glob"],
       "assistantText": true,
       "minAssistantChars": 200,
       "maxBufferEntries": 20,
@@ -99,7 +99,7 @@ Everything is optional. To pass options, use the `[name, options]` form:
 | `capture.tools` | see above | Allowlist of OpenCode tool names. Anything else is ignored. |
 | `capture.assistantText` | `true` | Record assistant prose as observations. |
 | `capture.minAssistantChars` | `200` | Below this, assistant text is not recorded. Keeps "OK." out of the store. |
-| `capture.maxBufferEntries` | `20` | Cap per turn. Oldest are dropped past this. |
+| `capture.maxBufferEntries` | `20` | Cap per turn. Oldest are dropped past this, and counted in `/mem`. |
 | `capture.maxBufferChars` | `4000` | Cap per turn, in characters. |
 | `capture.flushDebounceMs` | `5000` | Flush this long after the last tool call. |
 | `inject.enabled` | `true` | Inject prior context at session start. |
@@ -125,7 +125,24 @@ never match OpenCode's, so honouring it would look like it filters while doing n
 
 - `/memory <topic>` — search prior sessions.
 - `/memory` — inject current project context.
-- `/mem` — worker health, post counters, and recent context.
+- `/mem` — worker health, capture counters, and recent context.
+
+### What the `/mem` counters mean
+
+```
+claude-mem — project: your-project
+worker: healthy
+accepted: 2  dropped: 0  failures: 0
+```
+
+`accepted` counts **writes the worker took**, and nothing else. The worker queues an
+observation and persists it later, if at all, so acceptance is the only durability this
+process can actually observe — the counter deliberately does not claim more than that. A
+health probe or a context read does not count, so the number reflects capture alone.
+
+`dropped` counts buffered tool calls **discarded before the worker ever saw them**, because
+the turn exceeded `maxBufferEntries` or `maxBufferChars`. A nonzero value is real data loss;
+raise the caps if you see one.
 
 ## Fixing search on macOS
 
@@ -214,6 +231,34 @@ list, because an empty list is indistinguishable from a project that genuinely h
 Writes and context injection are unaffected by either failure.
 
 ## Known limitations
+
+### Semantic search is not project-scoped
+
+`claude_mem_search` and `/memory <topic>` return results from **every project**, even though
+the plugin sends the project name and the worker's own `/api/search/help` documents
+`project` as a supported parameter.
+
+Worker 10.1.0 forwards the parameter correctly and then drops it at the last step.
+`searchObservations` destructures the query into `{ query, ...rest }` and only ever reads
+`rest.limit`, then calls `queryChroma(query, 100)` with no where-clause. The filter was
+never implemented on this path, not merely broken:
+
+```js
+searchObservations(e) {
+  let { query, ...i } = this.normalizeParams(e)   // `i.project` is never read
+  let c = await this.queryChroma(query, 100)        // no `where`
+```
+
+The capability is one argument away — `queryChroma` already takes a where-clause as its
+third parameter, and `searchSessions` uses that slot for `doc_type`. The SQLite-backed
+`by-type`, `by-file` and `by-concept` endpoints **do** filter by project correctly; only
+the Chroma semantic path is affected.
+
+The reply is a rendered markdown table with no project column, so results cannot be filtered
+client-side either. The plugin therefore appends a note to every search result saying the
+results are unscoped, rather than letting another project's memories read as yours.
+
+Context **injection** is unaffected — `/api/context/inject` filters by project correctly.
 
 ### Old memories fall outside a hardcoded 90-day window
 

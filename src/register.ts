@@ -64,6 +64,11 @@ export async function setup(ctx: any): Promise<() => void> {
       maxChars: cfg.capture.maxBufferChars,
       debounceMs: cfg.capture.flushDebounceMs,
     },
+    // Evicting a buffered entry loses it before the worker ever sees it, so it is
+    // counted here where the status line can show it.
+    onDrop: (_sessionId, count) => {
+      client.counters.dropped += count
+    },
     onFlush: (sessionId, entries: BufferedEntry[]) => {
       // Detached by contract: no hook may await network I/O.
       void (async () => {

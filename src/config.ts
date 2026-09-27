@@ -26,6 +26,10 @@ export const DEFAULT_TOOLS = [
   "patch",
   "apply_patch",
   "bash",
+  // OpenCode's harness names its own primary tool `shell`. Listing only `bash`
+  // left the default allowlist capturing none of the agent's actual tool calls
+  // while still reading as configured.
+  "shell",
   "grep",
   "glob",
 ]

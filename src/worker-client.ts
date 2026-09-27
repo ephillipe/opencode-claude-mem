@@ -1,4 +1,12 @@
-export type Counters = { posted: number; dropped: number; failures: number }
+/**
+ * `accepted` counts writes the worker took, not memories that exist: the worker
+ * queues an observation and persists it later, if at all, so acceptance is the
+ * only durability this process can actually observe. Reads and health probes are
+ * deliberately excluded — counting them made `accepted: 4` out of two real posts
+ * plus a health check and a context read. `dropped` is filled in by the capture
+ * buffer whenever it evicts an entry.
+ */
+export type Counters = { accepted: number; dropped: number; failures: number }
 
 export type ClientOptions = { host: string; port: number; timeoutMs: number }
 
@@ -36,7 +44,7 @@ function readText(payload: unknown): string {
 
 export class WorkerClient {
   readonly baseUrl: string
-  readonly counters: Counters = { posted: 0, dropped: 0, failures: 0 }
+  readonly counters: Counters = { accepted: 0, dropped: 0, failures: 0 }
 
   constructor(private readonly opts: ClientOptions) {
     this.baseUrl = `http://${opts.host}:${opts.port}`
@@ -87,8 +95,9 @@ export class WorkerClient {
     return null
   }
 
-  private recordSuccess(): void {
-    this.counters.posted++
+  /** Only for writes. A read that succeeded did not store anything. */
+  private recordAccepted(): void {
+    this.counters.accepted++
   }
 
   async health(signal?: AbortSignal): Promise<boolean> {
@@ -97,7 +106,6 @@ export class WorkerClient {
       this.counters.failures++
       return false
     }
-    this.recordSuccess()
     return true
   }
 
@@ -111,7 +119,7 @@ export class WorkerClient {
       body: { ...this.sessionFields(a.contentSessionId), project: a.project, prompt: a.prompt },
     })
     if (!r.ok) return this.fail()
-    this.recordSuccess()
+    this.recordAccepted()
     const d = (r.data ?? {}) as Wire
     return {
       sessionDbId: typeof d.sessionDbId === "number" ? d.sessionDbId : undefined,
@@ -145,7 +153,7 @@ export class WorkerClient {
       this.fail()
       return false
     }
-    this.recordSuccess()
+    this.recordAccepted()
     return true
   }
 
@@ -166,7 +174,7 @@ export class WorkerClient {
       this.fail()
       return false
     }
-    this.recordSuccess()
+    this.recordAccepted()
     return true
   }
 
@@ -180,7 +188,7 @@ export class WorkerClient {
       this.fail()
       return false
     }
-    this.recordSuccess()
+    this.recordAccepted()
     return true
   }
 
@@ -188,7 +196,6 @@ export class WorkerClient {
     const q = `?projects=${encodeURIComponent(projects.join(","))}`
     const r = await this.request(`/api/context/inject${q}`, { method: "GET", signal })
     if (!r.ok) return this.fail()
-    this.recordSuccess()
     return readText(r.data)
   }
 
@@ -196,7 +203,6 @@ export class WorkerClient {
     const q = `?project=${encodeURIComponent(project)}&limit=${limit}`
     const r = await this.request(`/api/context/recent${q}`, { method: "GET", signal })
     if (!r.ok) return this.fail()
-    this.recordSuccess()
     return readText(r.data)
   }
 
@@ -204,7 +210,6 @@ export class WorkerClient {
     const q = `?filePath=${encodeURIComponent(filePath)}`
     const r = await this.request(`/api/search/by-file${q}`, { method: "GET", signal })
     if (!r.ok) return this.fail()
-    this.recordSuccess()
     return readText(r.data)
   }
 
@@ -229,7 +234,6 @@ export class WorkerClient {
       const reason = (r.data as Wire | null)?.error
       return { ok: false, reason: typeof reason === "string" ? reason : `HTTP ${r.status}` }
     }
-    this.recordSuccess()
     return { ok: true, text: readText(r.data) || JSON.stringify(r.data) }
   }
 }

@@ -47,6 +47,8 @@ export type TurnBufferOptions = {
   maxChars: number
   debounceMs: number
   onFlush: (entries: BufferedEntry[]) => void | Promise<void>
+  /** Called with how many entries were evicted, so silent loss can be reported. */
+  onDrop?: (count: number) => void
 }
 
 export class TurnBuffer {
@@ -74,10 +76,14 @@ export class TurnBuffer {
    */
   push(entry: BufferedEntry): void {
     this.entries.push(entry)
+    const before = this.entries.length
     while (this.entries.length > this.opts.maxEntries) this.entries.shift()
     // Always keep one entry, even if it alone blows the budget: an empty buffer
     // would silently discard the turn.
     while (this.chars > this.opts.maxChars && this.entries.length > 1) this.entries.shift()
+    // Eviction is real data loss, so it is reported rather than absorbed quietly.
+    const lost = before - this.entries.length
+    if (lost > 0) this.opts.onDrop?.(lost)
     this.schedule()
   }
 

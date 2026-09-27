@@ -35,6 +35,22 @@ export type CommandDef = {
 const DEGRADED_NOTE =
   "An empty result here would be indistinguishable from a project with no memories."
 
+/**
+ * worker 10.1.0 accepts `project` on /api/search/observations, forwards it, and then
+ * drops it: `searchObservations` destructures the rest of the query into an object it
+ * only ever reads `.limit` from, and calls `queryChroma` with no where-clause. The
+ * reply is a rendered markdown table with no project column, so the results cannot be
+ * filtered on this side either. The by-type / by-file / by-concept endpoints are
+ * SQLite-backed and do filter correctly — only the semantic path is affected.
+ */
+const UNSCOPED_NOTE =
+  "Note: claude-mem's semantic search ignores the project filter, so these results " +
+  "span all projects. Use search by-type / by-file / by-concept to scope to one."
+
+function scopedResult(text: string): string {
+  return `${text}\n\n${UNSCOPED_NOTE}`
+}
+
 export function parseQuery(promptText: string): string | null {
   const trimmed = promptText.trim()
   return trimmed.length > 0 ? trimmed : null
@@ -49,7 +65,7 @@ export function formatStatus(
   return [
     `claude-mem — project: ${project}`,
     `worker: ${state}`,
-    `posted: ${counters.posted}  dropped: ${counters.dropped}  failures: ${counters.failures}`,
+    `accepted: ${counters.accepted}  dropped: ${counters.dropped}  failures: ${counters.failures}`,
   ].join("\n")
 }
 
@@ -77,7 +93,7 @@ export function searchToolDef(client: WorkerClient, project: string): ToolDef {
       const query = typeof input?.query === "string" ? input.query.trim() : ""
       if (query.length === 0) return { content: "claude-mem: empty query." }
       const result = await client.searchObservations(query, project, 10, context.signal)
-      return { content: result.ok ? result.text : degradedBody(result.reason) }
+      return { content: result.ok ? scopedResult(result.text) : degradedBody(result.reason) }
     },
   }
 }
@@ -102,7 +118,7 @@ export function memoryCommandDef(args: {
       const result = await args.client.searchObservations(query, args.project, 10)
       await args.reply(
         result.ok
-          ? `claude-mem results for "${query}":\n\n${result.text}`
+          ? `claude-mem results for "${query}":\n\n${scopedResult(result.text)}`
           : degradedBody(result.reason),
         invocation,
       )

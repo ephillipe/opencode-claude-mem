@@ -186,3 +186,55 @@ describe("TurnBuffer dispose", () => {
     expect(seen).toHaveLength(1)
   })
 })
+
+describe("TurnBuffer drop reporting", () => {
+  // Evicting an entry is silent data loss. The status line prints a `dropped`
+  // counter, so the buffer has to say what it discarded.
+  const counting = (over: { maxEntries?: number; maxChars?: number } = {}) => {
+    const dropped: number[] = []
+    const b = new TurnBuffer({
+      maxEntries: 20,
+      maxChars: 4000,
+      debounceMs: 10_000,
+      onFlush: () => {},
+      onDrop: (n) => {
+        dropped.push(n)
+      },
+      ...over,
+    })
+    return { b, dropped }
+  }
+
+  it("reports each entry it evicts past maxEntries", () => {
+    const { b, dropped } = counting({ maxEntries: 2 })
+    b.push(entry(1))
+    b.push(entry(2))
+    b.push(entry(3))
+    expect(dropped).toEqual([1])
+    b.dispose()
+  })
+
+  it("reports each entry it evicts past maxChars", () => {
+    const { b, dropped } = counting({ maxChars: 120 })
+    b.push(entry(1))
+    b.push(entry(2))
+    b.push(entry(3))
+    expect(dropped).toEqual([1])
+    b.dispose()
+  })
+
+  it("reports nothing while the buffer stays inside its caps", () => {
+    const { b, dropped } = counting()
+    b.push(entry(1))
+    b.push(entry(2))
+    expect(dropped).toEqual([])
+    b.dispose()
+  })
+
+  it("does not report the entry it keeps when one entry alone busts maxChars", () => {
+    const { b, dropped } = counting({ maxChars: 10 })
+    b.push(entry(1, { chars: 5000 }))
+    expect(dropped).toEqual([])
+    b.dispose()
+  })
+})

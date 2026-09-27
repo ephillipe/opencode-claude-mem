@@ -36,20 +36,27 @@ describe("parseQuery", () => {
 
 describe("formatStatus", () => {
   it("reports the project, health and counters", () => {
-    const s = formatStatus("proj", { posted: 3, dropped: 1, failures: 0 }, true)
+    const s = formatStatus("proj", { accepted: 3, dropped: 1, failures: 0 }, true)
     expect(s).toContain("proj")
-    expect(s).toContain("posted: 3")
+    expect(s).toContain("accepted: 3")
     expect(s).toContain("dropped: 1")
     expect(s).toContain("healthy")
   })
 
+  // The worker accepts an observation into its queue and persists it much later,
+  // if at all. "posted" read as "saved"; only acceptance is observable from here.
+  it("does not claim a durability it cannot verify", () => {
+    const s = formatStatus("p", { accepted: 4, dropped: 0, failures: 0 }, true)
+    expect(s).not.toContain("posted")
+  })
+
   it("says so when the worker is unreachable", () => {
-    const s = formatStatus("p", { posted: 0, dropped: 0, failures: 2 }, false)
+    const s = formatStatus("p", { accepted: 0, dropped: 0, failures: 2 }, false)
     expect(s).toContain("unreachable")
   })
 
   it("distinguishes unknown health from unhealthy", () => {
-    expect(formatStatus("p", { posted: 0, dropped: 0, failures: 0 }, null)).toContain("unknown")
+    expect(formatStatus("p", { accepted: 0, dropped: 0, failures: 0 }, null)).toContain("unknown")
   })
 })
 
@@ -206,14 +213,14 @@ describe("statusCommandDef", () => {
       const def = statusCommandDef({
         client: new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 }),
         project: "proj",
-        counters: () => ({ posted: 7, dropped: 2, failures: 1 }),
+        counters: () => ({ accepted: 7, dropped: 2, failures: 1 }),
         health: async () => true,
         reply: async (body) => {
           sent.push(body)
         },
       })
       await def.execute(invocation(""))
-      expect(sent[0]).toContain("posted: 7")
+      expect(sent[0]).toContain("accepted: 7")
       expect(sent[0]).toContain("healthy")
       expect(sent[0]).toContain("# Recent")
     } finally {
@@ -228,7 +235,7 @@ describe("statusCommandDef", () => {
       const def = statusCommandDef({
         client: new WorkerClient({ host: "127.0.0.1", port: fw.port, timeoutMs: 2000 }),
         project: "proj",
-        counters: () => ({ posted: 0, dropped: 0, failures: 3 }),
+        counters: () => ({ accepted: 0, dropped: 0, failures: 3 }),
         health: async () => false,
         reply: async (body) => {
           sent.push(body)
@@ -236,6 +243,67 @@ describe("statusCommandDef", () => {
       })
       await def.execute(invocation(""))
       expect(sent[0]).toContain("unreachable")
+    } finally {
+      await fw.close()
+    }
+  })
+})
+
+describe("search scoping disclosure", () => {
+  // worker 10.1.0's searchObservations destructures `project` into a rest object it
+  // never reads, then calls queryChroma with no where-clause. The parameter is
+  // forwarded correctly all the way down and dropped at the last step, so semantic
+  // results span every project. The reply is a rendered markdown table with no
+  // project column, so there is nothing to filter on client-side either.
+  const client = (port: number) => new WorkerClient({ host: "127.0.0.1", port, timeoutMs: 2000 })
+
+  it("says results are not project-scoped in the tool output", async () => {
+    const fw = await startFakeWorker()
+    try {
+      fw.setSearchBroken(null)
+      const out = await searchToolDef(client(fw.port), "p").execute({ query: "anything" }, {})
+      expect(out.content).toContain("all projects")
+    } finally {
+      await fw.close()
+    }
+  })
+
+  it("says the same in the /memory reply", async () => {
+    const fw = await startFakeWorker()
+    try {
+      fw.setSearchBroken(null)
+      const sent: string[] = []
+      const def = memoryCommandDef({
+        client: client(fw.port),
+        project: "proj",
+        reply: async (body) => {
+          sent.push(body)
+        },
+      })
+      await def.execute(invocation("anything"))
+      expect(sent[0]).toContain("all projects")
+    } finally {
+      await fw.close()
+    }
+  })
+
+  it("keeps the worker's own result text above the note", async () => {
+    const fw = await startFakeWorker()
+    try {
+      fw.setSearchBroken(null)
+      const out = await searchToolDef(client(fw.port), "p").execute({ query: "coalescing" }, {})
+      expect(out.content).toContain('No observations found matching "coalescing"')
+    } finally {
+      await fw.close()
+    }
+  })
+
+  it("omits the note when search is degraded, since that path already fails loudly", async () => {
+    const fw = await startFakeWorker()
+    try {
+      const out = await searchToolDef(client(fw.port), "p").execute({ query: "anything" }, {})
+      expect(out.content).toContain("unavailable")
+      expect(out.content).not.toContain("all projects")
     } finally {
       await fw.close()
     }

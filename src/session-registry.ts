@@ -13,6 +13,7 @@ export type SessionState = {
 
 export type SessionRegistryOptions = {
   onFlush: (sessionId: string, entries: BufferedEntry[]) => void | Promise<void>
+  onDrop?: (sessionId: string, count: number) => void
   buffer: { maxEntries: number; maxChars: number; debounceMs: number }
 }
 
@@ -42,6 +43,7 @@ export class SessionRegistry {
         buffer: new TurnBuffer({
           ...this.opts.buffer,
           onFlush: (entries) => this.opts.onFlush(sessionId, entries),
+          onDrop: (count) => this.opts.onDrop?.(sessionId, count),
         }),
       }
       this.sessions.set(sessionId, state)

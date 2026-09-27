@@ -167,3 +167,19 @@ describe("cleanup", () => {
     expect(seen.sort()).toEqual(["s1", "s2"])
   })
 })
+
+describe("buffer drop reporting", () => {
+  it("names the session that lost entries and how many", () => {
+    const dropped: [string, number][] = []
+    const r = new SessionRegistry({
+      onFlush: () => {},
+      onDrop: (sessionId, n) => {
+        dropped.push([sessionId, n])
+      },
+      buffer: { maxEntries: 1, maxChars: 4000, debounceMs: 10_000 },
+    })
+    r.state("s1").buffer.push(entry(1))
+    r.state("s1").buffer.push(entry(2))
+    expect(dropped).toEqual([["s1", 1]])
+  })
+})
