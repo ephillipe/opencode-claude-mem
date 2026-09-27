@@ -27,10 +27,6 @@ export class SessionRegistry {
 
   constructor(private readonly opts: SessionRegistryOptions) {}
 
-  get count(): number {
-    return this.sessions.size
-  }
-
   state(sessionId: string): SessionState {
     let state = this.sessions.get(sessionId)
     if (!state) {

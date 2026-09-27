@@ -57,12 +57,19 @@ describe("renderTurn", () => {
 })
 
 describe("TurnBuffer caps", () => {
-  it("drops the oldest entry past maxEntries", () => {
-    const b = new TurnBuffer({ maxEntries: 2, maxChars: 10_000, debounceMs: 10_000, onFlush: () => {} })
+  // These assert *which* entries survive, read back through flush(), rather than
+  // an internal count. A count alone would pass even if eviction dropped the
+  // newest entry instead of the oldest, which is the opposite of the intent.
+  const pathsOf = (entries: BufferedEntry[]) => entries.map((e) => (e.input as any).path)
+
+  it("drops the oldest entry past maxEntries", async () => {
+    const seen: BufferedEntry[][] = []
+    const b = new TurnBuffer({ maxEntries: 2, maxChars: 10_000, debounceMs: 10_000, onFlush: (e) => { seen.push(e) } })
     b.push(entry(1))
     b.push(entry(2))
     b.push(entry(3))
-    expect(b.size).toBe(2)
+    await b.flush()
+    expect(pathsOf(seen[0]!)).toEqual(["f2.ts", "f3.ts"])
     b.dispose()
   })
 
@@ -75,10 +82,13 @@ describe("TurnBuffer caps", () => {
     b.dispose()
   })
 
-  it("keeps at least one entry even when it alone exceeds maxChars", () => {
-    const b = new TurnBuffer({ maxEntries: 100, maxChars: 10, debounceMs: 10_000, onFlush: () => {} })
+  it("keeps at least one entry even when it alone exceeds maxChars", async () => {
+    const seen: BufferedEntry[][] = []
+    const b = new TurnBuffer({ maxEntries: 100, maxChars: 10, debounceMs: 10_000, onFlush: (e) => { seen.push(e) } })
     b.push(entry(1, { chars: 5000 }))
-    expect(b.size).toBe(1)
+    await b.flush()
+    // Dropping the only entry would silently lose the turn entirely.
+    expect(pathsOf(seen[0]!)).toEqual(["f1.ts"])
     b.dispose()
   })
 })
@@ -92,7 +102,9 @@ describe("TurnBuffer flush", () => {
     await b.flush()
     expect(seen).toHaveLength(1)
     expect(seen[0]).toHaveLength(2)
-    expect(b.size).toBe(0)
+    // A second flush must not replay what was already handed over.
+    await b.flush()
+    expect(seen).toHaveLength(1)
   })
 
   it("is a no-op on an empty buffer", async () => {

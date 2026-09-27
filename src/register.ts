@@ -35,9 +35,25 @@ function messageText(message: unknown): string {
     .trim()
 }
 
-/** The event stream and the two session hooks all identify a session, but not identically. */
+/**
+ * Three different envelopes reach this function, which is why the shape has to be
+ * probed rather than assumed:
+ *
+ * - session/tool hooks carry `sessionID` at the top level (`SessionPrompt.sessionID`);
+ * - bus events carry it under `data` (`{ type: "session.idle", data: { sessionID } }`,
+ *   per the `session.idle` struct in @opencode/protocol's event definitions);
+ * - `properties.sessionID` is retained for older servers.
+ *
+ * Missing `data` here silently disables the whole idle path: every `session.idle`
+ * resolves to undefined and the loop skips summarize, so turns are captured as
+ * observations but no session summary is ever produced.
+ */
 function sessionIdOf(source: any): string | undefined {
-  const id = source?.sessionID ?? source?.properties?.sessionID ?? source?.properties?.sessionId
+  const id =
+    source?.sessionID ??
+    source?.data?.sessionID ??
+    source?.properties?.sessionID ??
+    source?.properties?.sessionId
   return typeof id === "string" && id.length > 0 ? id : undefined
 }
 

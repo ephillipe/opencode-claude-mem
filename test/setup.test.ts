@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { startFakeWorker, type FakeWorker } from "./helpers/fake-worker"
 import { setup } from "../src/register"
 
@@ -138,6 +141,34 @@ describe("registration", () => {
     const h = await boot()
     expect(h.namespaces[0].name).toBe("claude_mem")
     expect(h.tools[0].name).toBe("search")
+  })
+
+  it("still loads when the real settings.json is unparseable", async () => {
+    // A truncated or hand-edited settings.json must not take the whole plugin down,
+    // which is what happens if the JSON.parse guard is ever removed: setup() throws
+    // before a single hook is registered and memory is silently off for the session.
+    const dir = mkdtempSync(join(tmpdir(), "cm-home-"))
+    const originalHome = process.env.HOME
+    try {
+      mkdirSync(join(dir, ".claude-mem"), { recursive: true })
+      writeFileSync(join(dir, ".claude-mem", "settings.json"), "{ not json at all ")
+      process.env.HOME = dir
+
+      fw = await startFakeWorker()
+      const h = makeCtx(fw.port, { worker: { port: fw.port } })
+      const cleanup = await setup(h.ctx)
+      cleanups.push(cleanup)
+
+      expect(Object.keys(h.hooks).sort()).toEqual([
+        "context",
+        "prompt",
+        "tool.execute.after",
+      ])
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME
+      else process.env.HOME = originalHome
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it("registers /memory and /mem", async () => {
@@ -305,6 +336,50 @@ describe("idle and delete", () => {
     await h.emit({ type: "session.deleted", properties: { sessionID: "s1" } })
     await h.emit({ type: "message.updated", properties: { sessionID: "s1" } })
     expect(h.worker.calls.filter((c) => c.path === "/api/sessions/complete")).toHaveLength(1)
+  })
+})
+
+/**
+ * The V2 event stream does not use the hook shape. Hooks put the session id at the
+ * top level (`SessionPrompt.sessionID`); bus events put it under `data`
+ * (`Schema.Struct<{ sessionID: SessionID }>` in @opencode/protocol event.d.ts).
+ * These tests pin the real envelope, because the earlier suite fired a
+ * `properties.sessionID` shape OpenCode never emits — 152 green tests, zero
+ * summaries actually posted.
+ */
+describe("V2 event envelope", () => {
+  it("summarizes on idle using data.sessionID", async () => {
+    const h = await boot()
+    h.fire("prompt", { sessionID: "s1", prompt: { text: "the question" } })
+    await new Promise((r) => setTimeout(r, 60))
+    await h.emit({ type: "session.idle", data: { sessionID: "s1" } })
+    const s = h.worker.calls.filter((c) => c.path === "/api/sessions/summarize")
+    expect(s).toHaveLength(1)
+    expect(s[0]!.body.last_user_message).toBe("the question")
+  })
+
+  it("flushes the turn buffer on idle using data.sessionID", async () => {
+    const h = await boot()
+    h.fire("tool.execute.after", {
+      sessionID: "s1", tool: "read", status: "completed",
+      input: { path: "a.ts" }, result: { output: "x" },
+    })
+    await new Promise((r) => setTimeout(r, 40))
+    await h.emit({ type: "session.idle", data: { sessionID: "s1" } })
+    expect(h.worker.calls.filter((c) => c.body?.tool_name === "turn_summary")).toHaveLength(1)
+  })
+
+  it("completes on delete using data.sessionID", async () => {
+    const h = await boot()
+    await h.emit({ type: "session.deleted", data: { sessionID: "s1" } })
+    expect(h.worker.calls.filter((c) => c.path === "/api/sessions/complete")).toHaveLength(1)
+  })
+
+  it("still accepts the top-level and properties shapes the hooks use", async () => {
+    const h = await boot()
+    await h.emit({ type: "session.idle", sessionID: "s1" })
+    await h.emit({ type: "session.idle", properties: { sessionID: "s1" } })
+    expect(h.worker.calls.filter((c) => c.path === "/api/sessions/summarize")).toHaveLength(2)
   })
 })
 

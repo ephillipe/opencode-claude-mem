@@ -138,10 +138,12 @@ describe("buffer wiring", () => {
 describe("cleanup", () => {
   it("drops the entry on delete", () => {
     const r = make()
-    r.state("s")
-    expect(r.count).toBe(1)
+    const before = r.state("s")
+    r.markInjected("s")
     r.delete("s")
-    expect(r.count).toBe(0)
+    // Deleting must yield a genuinely new state next time, not the mutated old one.
+    expect(r.state("s")).not.toBe(before)
+    expect(r.state("s").injected).toBe(false)
   })
 
   it("resets the gates after delete, so a reused id starts clean", () => {

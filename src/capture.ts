@@ -58,16 +58,8 @@ export class TurnBuffer {
 
   constructor(private readonly opts: TurnBufferOptions) {}
 
-  get size(): number {
-    return this.entries.length
-  }
-
   get chars(): number {
     return this.entries.reduce((n, e) => n + e.chars, 0)
-  }
-
-  get scheduled(): boolean {
-    return this.timer !== null
   }
 
   /**

@@ -5,3 +5,6 @@ node_modules/
 # npm auth tokens. Publishing uses a token in ~/.npmrc; a
 # project-local .npmrc is redundant and must never be committed.
 .npmrc
+
+# coverage output from `bun test --coverage`
+coverage/
