@@ -285,6 +285,32 @@ immediately readable. There is no retry queue in this plugin by design: the work
 queueing and recovery, and a retry loop running inside a hook is exactly the kind of thing
 that stalls the agent loop.
 
+## How the OpenCode V2 bus is read
+
+The session id reaches this plugin in **two different envelopes**, and reading only one of
+them silently disables auto-memory:
+
+| Source | Where the id lives |
+| --- | --- |
+| Bus events (`session.idle`, `session.deleted`) | `event.data.sessionID` |
+| Hooks (`context`, `tool.execute.after`, …) | the argument's own `sessionID` |
+
+`sessionIdOf()` in `src/register.ts` probes all of them. A third shape,
+`properties.sessionID`, is read too — that is the V1 spelling, and it is kept only so an
+event from an older host cannot be mistaken for an event with no session.
+
+**Why this is spelled out:** through 0.1.2 the resolver probed the hook and V1 shapes and
+not `data`. Every `session.idle` therefore resolved to `undefined`, the event loop skipped
+`summarize`, and no session summary was ever written. Tool capture kept working, so the
+symptom was a viewer that showed tool activity and no sessions. Line coverage was 98.5% and
+every test was green, because all of them fired a hand-written `properties.sessionID`
+fixture that OpenCode has never emitted.
+
+So the envelope is asserted against the installed `@opencode/schema` rather than against a
+fixture anyone could have invented. `test/contract-events.test.ts` reads the real event
+manifest and fails if `data` disappears or a `properties` field appears — and it was proven
+to fail by reverting the fix.
+
 ## Development
 
 ```sh
@@ -296,6 +322,45 @@ bun run typecheck
 `src/register.ts` is the only file permitted to read the OpenCode context. The other five
 modules are plain data and `fetch`, which is what keeps a future V1 shim to a single file.
 A test enforces this.
+
+### Verifying against a live worker
+
+The unit suite runs against a fake worker, so it proves the plugin asks the right questions
+and never once proves the worker answers them. `scripts/verify-live.ts` asks the real
+worker, against the real store, and scores all four memory paths:
+
+```sh
+bun run verify:live                          # no session to check: auto-memory is UNKNOWN
+bun run verify:live --session ses_…          # after a real turn, auto-memory can be scored
+```
+
+It is read-only, and it exits non-zero if any path fails, so it can gate a manual check.
+Each path reports `PASS`, `FAIL`, or `UNKNOWN`:
+
+| Path | Question it answers |
+| --- | --- |
+| `injection` | does `/api/context/inject` return actual memory, or an empty shell that reads like "nothing was ever saved"? |
+| `recovery` | are observations stored, and are they recallable afterwards? |
+| `search` | does the semantic backend answer, or is it erroring behind a 200? |
+| `auto memory` | did a real turn produce a `session_summaries` row, or only tool observations? |
+
+`UNKNOWN` is a real verdict, not a soft pass. `session.idle` only exists during a model
+turn, so without `--session` there is no evidence to score and the script says so instead
+of implying the feature is untested-but-fine. Upgrading that to `PASS` requires a session id
+and a real turn — which is the same bar that let the `data.sessionID` bug ship.
+
+Two guards keep the output honest:
+
+- Debug traffic is not credited. Passing a `ses_PROBE_*` id is refused outright, and if
+  probe sessions exist in the store the run prints a warning. A `curl` written by hand
+  produces exactly the rows that a working plugin produces, which is how broken automation
+  has previously looked healthy.
+- The bug signature is named. A session with observations but no summary reports
+  "the idle event is not resolving the session id" and points at `sessionIdOf()`.
+
+Both behaviours are covered in `test/verify-live.test.ts`, which runs the script as a
+subprocess and reads its exit code — proven to fail by removing the probe guard, the
+worker-down check, and the diagnostic message in turn.
 
 ### Releasing
 
@@ -331,8 +396,9 @@ validate any of these fields when you save them, so a typo surfaces only as `ENE
 publish time.
 
 It cannot bootstrap the first release: npm only offers Trusted Publisher settings on a package
-that already exists. So `v0.1.0` goes out through `scripts/publish.sh`, and every version after
-it is a tag push.
+that already exists. So `0.1.0` went out through `scripts/publish.sh`, which is also why it
+has no git tag — only `v0.1.1` and later are tags. Every version from 0.1.1 on is a tag
+push.
 
 ## License
 
