@@ -1,4 +1,5 @@
 import { basename } from "node:path"
+import { defaultDebugSettings, DEFAULT_DEBUG_LOG, type DebugSettings } from "./debug"
 
 export type Env = Record<string, string | undefined>
 
@@ -17,6 +18,7 @@ export type ResolvedConfig = {
   inject: { enabled: boolean; maxChars: number }
   worker: { host: string; port: number; timeoutMs: number }
   project: { name: string | null }
+  debug: DebugSettings
   /**
    * Which keys were set explicitly, and where they came from, keyed `section.field`.
    * A value alone cannot answer "is my settings.json being read?" — a default and an
@@ -56,6 +58,7 @@ export function defaultConfig(): ResolvedConfig {
     provenance: {},
     worker: { host: "127.0.0.1", port: 37702, timeoutMs: 5000 },
     project: { name: null },
+    debug: defaultDebugSettings(),
   }
 }
 
@@ -113,6 +116,7 @@ export function resolveConfig(
   const inject = section(rawOptions, "inject")
   const worker = section(rawOptions, "worker")
   const project = section(rawOptions, "project")
+  const debug = section(rawOptions, "debug")
 
   if (Array.isArray(capture.tools)) {
     cfg.capture.tools = capture.tools.filter((t): t is string => typeof t === "string")
@@ -189,6 +193,52 @@ export function resolveConfig(
   from("project.name", OPTIONS, cfg.project.name !== null)
   cfg.enabled = bool(rawOptions.enabled, cfg.enabled)
   from("enabled", OPTIONS, typeof rawOptions.enabled === "boolean")
+
+  // Debug is the one section where the env fallback is not a convenience but the
+  // only reliable switch. `options` reaches the plugin through opencode.jsonc,
+  // which a desktop host may not re-read on every reload, and the log has to be
+  // turnable on for a running server whose config nobody wants to restart. Both
+  // spellings are accepted so it works from a shell, a launchd plist, or CI.
+  const envDebug = (env.CLAUDE_MEM_DEBUG ?? "").trim().toLowerCase()
+  const envDebugOn =
+    envDebug === "1" || envDebug === "true" || envDebug === "yes" || envDebug === "on"
+  const settingsDebug = (asString(settings.CLAUDE_MEM_DEBUG) ?? "").trim().toLowerCase()
+  const settingsDebugOn =
+    settingsDebug === "1" ||
+    settingsDebug === "true" ||
+    settingsDebug === "yes" ||
+    settingsDebug === "on"
+
+  cfg.debug.enabled = bool(debug.enabled, envDebugOn || settingsDebugOn)
+  from("debug.enabled", OPTIONS, typeof debug.enabled === "boolean")
+  if (cfg.provenance["debug.enabled"] === undefined) {
+    from("debug.enabled", ENV, envDebugOn)
+  }
+  if (cfg.provenance["debug.enabled"] === undefined) {
+    from("debug.enabled", SETTINGS, settingsDebugOn)
+  }
+
+  const logPath = str(
+    debug.logPath,
+    str(env.CLAUDE_MEM_DEBUG_LOG, str(asString(settings.CLAUDE_MEM_DEBUG_LOG), DEFAULT_DEBUG_LOG)),
+  )
+  cfg.debug.logPath = logPath
+  from("debug.logPath", OPTIONS, asString(debug.logPath) !== undefined)
+  if (cfg.provenance["debug.logPath"] === undefined) {
+    from("debug.logPath", ENV, asString(env.CLAUDE_MEM_DEBUG_LOG) !== undefined)
+  }
+  if (cfg.provenance["debug.logPath"] === undefined) {
+    from("debug.logPath", SETTINGS, asString(settings.CLAUDE_MEM_DEBUG_LOG) !== undefined)
+  }
+
+  cfg.debug.verbose = bool(debug.verbose, env.CLAUDE_MEM_DEBUG_VERBOSE === "1")
+  from("debug.verbose", OPTIONS, typeof debug.verbose === "boolean")
+  if (cfg.provenance["debug.verbose"] === undefined) {
+    from("debug.verbose", ENV, env.CLAUDE_MEM_DEBUG_VERBOSE === "1")
+  }
+
+  cfg.debug.maxValueChars = num(debug.maxValueChars, cfg.debug.maxValueChars)
+  from("debug.maxValueChars", OPTIONS, asNumber(debug.maxValueChars) !== undefined)
 
   return cfg
 }

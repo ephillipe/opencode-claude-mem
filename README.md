@@ -108,12 +108,62 @@ Everything is optional. To pass options, use the `[name, options]` form:
 | `worker.port` | see above | Worker port. |
 | `worker.timeoutMs` | `5000` | Per-request timeout. |
 | `project.name` | directory basename | Overrides the project name. |
+| `debug.enabled` | `false` | Write a diagnostic log. See [Debugging](#debugging). |
+| `debug.logPath` | `/tmp/claude-mem-debug.log` | Where that log goes. |
+| `debug.verbose` | `false` | Also log whole tool events, not just gate decisions. |
+| `debug.maxValueChars` | `2000` | Truncate each logged value at this length. |
 
 Any invalid value falls back to its default rather than throwing. A typo in a config file
 will not take the plugin down.
 
-### Why the project name matters
+## Debugging
 
+Turn it on from `opencode.jsonc`:
+
+```jsonc
+"plugins": [
+  ["@ephillipe/opencode-claude-mem", { "debug": { "enabled": true, "logPath": "/tmp/claude-mem-debug.log" } }]
+]
+```
+
+or without touching the config:
+
+```sh
+CLAUDE_MEM_DEBUG=1 CLAUDE_MEM_DEBUG_LOG=/tmp/claude-mem-debug.log opencode
+```
+
+`/mem` then prints `debug: on  <path>`, so you can confirm from inside a session
+that it is actually on.
+
+The log is one JSON object per line. Every line carries `ts`, `pid` and `build`, so
+concurrent sessions and a stale cached build are both visible:
+
+```sh
+jq -r 'select(.reason=="unhealthy") | .detail' /tmp/claude-mem-debug.log
+```
+
+**`reason` is a stable code, not a sentence.** Filter on it; read `detail` for the
+explanation. The codes are `disabled`, `unhealthy`, `noSessionId`, `notAllowlisted`,
+`emptyBuffer`, `alreadyInjected`, `alreadyInitialized`, `duplicateMessage`.
+
+This exists because capture fails silently by design — each gate is an early
+`return` — so "no memories" and "no log" look identical from the outside. Two
+concrete failures it is built to catch:
+
+- **`build` and `module` disagree with what you are editing.** OpenCode serves npm
+  plugins from its own cache. A server can be running `0.1.0` while `package.json`
+  says `0.1.5` and your working copy is newer still, and nothing on screen says so.
+  Check with `opencode plugin list`; the log's `module` field is the proof of which
+  file actually ran.
+- **A gate closed for a reason you did not expect.** Every early return now names
+  itself, and a `noSessionId` skip logs the event's own property names, so a wrong
+  guess about where the session id lives is distinguishable from its absence.
+
+The log records write outcomes and HTTP status, never payloads — a `turn_summary`
+carries file paths and command output, and a debug log should be safe to paste into
+an issue. Use `debug.verbose` when you need the raw event shape.
+
+### Why the project name matters
 Every existing claude-mem session is named after its **directory basename**. This plugin
 uses the same rule, so your existing history stays visible. If you override
 `project.name`, past sessions become invisible to project filters.

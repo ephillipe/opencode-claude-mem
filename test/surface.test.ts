@@ -232,6 +232,7 @@ describe("statusCommandDef", () => {
         project: "proj",
         counters: () => ({ accepted: 7, dropped: 2, failures: 1 }),
         provenance: () => ({}),
+        debug: () => ({ enabled: false, logPath: "/tmp/claude-mem-debug.log" }),
         health: async () => true,
         reply: async (body) => {
           sent.push(body)
@@ -255,6 +256,7 @@ describe("statusCommandDef", () => {
         project: "proj",
         counters: () => ({ accepted: 0, dropped: 0, failures: 3 }),
         provenance: () => ({}),
+        debug: () => ({ enabled: false, logPath: "/tmp/claude-mem-debug.log" }),
         health: async () => false,
         reply: async (body) => {
           sent.push(body)

@@ -8,6 +8,10 @@
  */
 export type Counters = { accepted: number; dropped: number; failures: number }
 
+import type { Logger } from "./debug"
+
+const NOOP_LOG: Logger = () => {}
+
 /** `accepted` means the worker took the write, not that anything was persisted. */
 export type WriteOutcome = "accepted" | "failed"
 
@@ -17,7 +21,7 @@ export type WriteAttempt = {
   at: string
 }
 
-export type ClientOptions = { host: string; port: number; timeoutMs: number }
+export type ClientOptions = { host: string; port: number; timeoutMs: number; log?: Logger }
 
 /**
  * A failed search is reported as a reason rather than an empty result: the worker's
@@ -66,6 +70,10 @@ export class WorkerClient {
     this.baseUrl = `http://${opts.host}:${opts.port}`
   }
 
+  private get log(): Logger {
+    return this.opts.log ?? NOOP_LOG
+  }
+
   private async request(
     path: string,
     init: { method: "GET" | "POST"; body?: unknown; timeoutMs?: number; signal?: AbortSignal },
@@ -73,6 +81,7 @@ export class WorkerClient {
     const timeout = AbortSignal.timeout(init.timeoutMs ?? this.opts.timeoutMs)
     // Compose rather than replace, so a caller-supplied signal still cancels the request.
     const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout
+    const started = Date.now()
     try {
       const res = await fetch(`${this.baseUrl}${path}`, {
         method: init.method,
@@ -87,8 +96,27 @@ export class WorkerClient {
       } catch {
         // Not JSON — keep the raw body, some endpoints answer text/plain.
       }
+      this.log("worker.response", {
+        method: init.method,
+        path,
+        status: res.status,
+        ok: res.ok,
+        ms: Date.now() - started,
+        bytes: raw.length,
+      })
       return { ok: res.ok, status: res.status, data }
-    } catch {
+    } catch (err) {
+      // status 0 is the sentinel for "never reached the worker". It is the single
+      // most useful line in this file when capture is dead: it separates a refused
+      // connection from a rejected payload, which look identical from the outside.
+      this.log("worker.unreachable", {
+        method: init.method,
+        path,
+        status: 0,
+        ok: false,
+        ms: Date.now() - started,
+        error: err instanceof Error ? err.message : String(err),
+      })
       return { ok: false, status: 0, data: null }
     }
   }
@@ -132,6 +160,17 @@ export class WorkerClient {
       outcome: r.ok ? "accepted" : "failed",
       at: new Date().toISOString(),
     }
+    const wire = (body ?? {}) as Wire
+    this.log("worker.write", {
+      path,
+      outcome: this.lastWrite.outcome,
+      status: r.status,
+      // The payload keys, never the values: a turn_summary carries file paths and
+      // command output, and this log should be safe to paste into an issue.
+      keys: Object.keys(wire),
+      tool: wire.tool_name,
+      session: wire.contentSessionId,
+    })
     return r
   }
 

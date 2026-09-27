@@ -65,9 +65,10 @@ export function formatStatus(
   endpoint: string,
   build: string,
   lastWrite: WriteAttempt | null,
+  debug?: { enabled: boolean; logPath: string },
 ): string {
   const state = healthy === null ? "unknown" : healthy ? "healthy" : "unreachable"
-  return [
+  const lines = [
     `claude-mem — project: ${project}`,
     `build: ${build}`,
     `worker: ${state}  ${endpoint}`,
@@ -75,7 +76,12 @@ export function formatStatus(
     lastWrite === null
       ? "last write: none this session"
       : `last write: ${lastWrite.outcome}  ${lastWrite.path}  ${lastWrite.at}`,
-  ].join("\n")
+  ]
+  // Only when it is on. A line that is always present and always says "off" is a
+  // line people learn to skip, and this is the one setting whose absence should be
+  // invisible until someone deliberately turns it on.
+  if (debug?.enabled) lines.push(`debug: on  ${debug.logPath}`)
+  return lines.join("\n")
 }
 
 function degradedBody(reason: string): string {
@@ -140,6 +146,7 @@ export function statusCommandDef(args: {
   project: string
   counters: () => Counters
   provenance: () => Record<string, string>
+  debug: () => { enabled: boolean; logPath: string }
   health: () => Promise<boolean>
   reply: Reply
 }): CommandDef {
@@ -156,6 +163,7 @@ export function statusCommandDef(args: {
           args.client.baseUrl,
           BUILD_VERSION,
           args.client.lastWrite,
+          args.debug(),
         ),
       ]
       // The live check scores auto-memory per session, and the session id is not

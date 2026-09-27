@@ -51,6 +51,7 @@ package.json
 src/build-info.ts
 src/capture.ts
 src/config.ts
+src/debug.ts
 src/index.ts
 src/probe-session.ts
 src/register.ts
