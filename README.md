@@ -447,6 +447,29 @@ that already exists. So `0.1.0` went out through `scripts/publish.sh`, which is 
 has no git tag — only `v0.1.1` and later are tags. Every version from 0.1.1 on is a tag
 push.
 
+#### Before you push a tag
+
+CI runs the typecheck, the tests, the tarball check and the tag/manifest guard, and only then
+publishes. That is the right order for npm — nothing is published when a check fails. It is the
+wrong order for the *tag*, which is public the moment you push it, so a check that only fails
+afterwards leaves a tag on the repository that corresponds to no release.
+
+That is not hypothetical: `v0.1.5` was tagged, pushed, and refused by the tarball check,
+because two new source files were not in the expected contents list. Nothing was published, but
+the tag existed.
+
+So run the checks the tag depends on, before the tag:
+
+```sh
+bun test && npm run typecheck && npm run verify:tarball
+# then bump package.json, then:
+git tag -a v<version> -m "…" && git push origin main v<version>
+```
+
+Bump `package.json` **before** tagging, or the tag/manifest guard fails on a version that is
+already pushed. `verify:tarball` needs the network, which is why it is not in `prepublishOnly`,
+and it takes about ten seconds — cheap next to a release that has to be redone.
+
 ## License
 
 MIT

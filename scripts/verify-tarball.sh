@@ -48,9 +48,11 @@ cat >expected.txt <<'EOF'
 LICENSE
 README.md
 package.json
+src/build-info.ts
 src/capture.ts
 src/config.ts
 src/index.ts
+src/probe-session.ts
 src/register.ts
 src/session-registry.ts
 src/surface.ts
@@ -60,7 +62,7 @@ if ! diff -u expected.txt actual.txt; then
   echo "  FAIL: tarball contents differ from expected" >&2
   exit 1
 fi
-echo "  ok 10 files, no test or script leakage"
+echo "  ok $(wc -l <actual.txt | tr -d ' ') files, no test or script leakage"
 
 echo "Loading the plugin from node_modules"
 # The fake worker is imported from the repository by absolute path on purpose. It

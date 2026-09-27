@@ -15,6 +15,7 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "verify:live": "bun run scripts/verify-live.ts",
+    "verify:tarball": "./scripts/verify-tarball.sh",
     "prepublishOnly": "bun run typecheck && bun test"
   },
   "keywords": [
