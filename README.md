@@ -334,6 +334,21 @@ bun run verify:live                          # no session to check: auto-memory 
 bun run verify:live --session ses_…          # after a real turn, auto-memory can be scored
 ```
 
+`/mem` prints the id of the session you are in, with the command to run:
+
+```
+claude-mem — project: opencode-claude-mem
+worker: healthy
+accepted: 3  dropped: 0  failures: 0
+session: ses_f21229fb4ffeNk1sKCZkyEBoHP
+check this session end to end: bun run verify:live --session ses_f21229fb4ffeNk1sKCZkyEBoHP
+```
+
+The id is not printed anywhere else — not by the TUI, not by the worker — so `/mem` is the
+only way to get it. That check only reports anything about a plugin version loaded at
+startup, so a session that began before an upgrade is scoring the *old* build: the counters
+will look healthy and auto-memory will still fail.
+
 It is read-only, and it exits non-zero if any path fails, so it can gate a manual check.
 Each path reports `PASS`, `FAIL`, or `UNKNOWN`:
 

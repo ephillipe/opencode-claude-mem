@@ -430,6 +430,20 @@ describe("commands", () => {
     expect(h.prompts[0].delivery).toBe("steer")
   })
 
+  it("/mem prints the session id to pass to verify:live --session", async () => {
+    // The live check scores auto-memory per session, and there is no other way to
+    // learn the id: nothing in the TUI prints it and the plugin never said so. A
+    // reader told to run `verify:live --session <id>` with no way to obtain <id>
+    // cannot run the check at all.
+    const h = await boot()
+    await h.commands.find((c) => c.name === "mem")!.execute({
+      sessionID: "ses_abc123", prompt: { text: "" }, delivery: "steer",
+    })
+    expect(h.prompts[0].text).toContain("ses_abc123")
+    // The id is only useful if the reader is told what to do with it.
+    expect(h.prompts[0].text).toContain("verify:live --session")
+  })
+
   it("/memory reports a dead backend instead of an empty result", async () => {
     const h = await boot()
     await h.commands.find((c) => c.name === "memory")!.execute({

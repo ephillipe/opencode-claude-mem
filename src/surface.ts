@@ -139,6 +139,12 @@ export function statusCommandDef(args: {
     execute: async (invocation) => {
       const healthy = await args.health()
       const lines = [formatStatus(args.project, args.counters(), healthy)]
+      // The live check scores auto-memory per session, and the session id is not
+      // printed anywhere else — not in the TUI, not in the worker. Without this
+      // line the documented `verify:live --session <id>` step cannot be followed.
+      // The counters above describe this session; say which one it is.
+      const id = invocation.sessionID
+      lines.push(`session: ${id}`, `check this session end to end: bun run verify:live --session ${id}`)
       const recent = await args.client.recentContext(args.project, 5)
       if (recent) lines.push("", recent)
       await args.reply(lines.join("\n"), invocation)
